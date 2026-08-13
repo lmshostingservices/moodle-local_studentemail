@@ -25,7 +25,6 @@ defined('MOODLE_INTERNAL') || die();
  *   ['success' => bool, 'message' => string, ...extra]
  */
 class email_manager {
-
     // Email format constants.
     const FORMAT_AUTONUMBER = 'autonumber';
     const FORMAT_USERNAME   = 'username';

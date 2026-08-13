@@ -22,7 +22,6 @@ namespace local_studentemail;
 defined('MOODLE_INTERNAL') || die();
 
 class observer {
-
     /**
      * A new Moodle user has been created.
      * Auto-provision if the setting is enabled.

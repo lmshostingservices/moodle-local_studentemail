@@ -383,7 +383,7 @@ try {
                     $in_params
                 );
                 $linked = array_map('strtolower', $linked);
-                $cpanel_emails = array_values(array_filter($cpanel_emails, function($e) use ($linked) {
+                $cpanel_emails = array_values(array_filter($cpanel_emails, function ($e) use ($linked) {
                     return !in_array($e, $linked, true);
                 }));
             }
@@ -611,7 +611,7 @@ try {
             }
 
             // Helper: open IMAP with a given username, list all folders + counts.
-            $probe = function(string $username) use ($server_prefix, $imap_pass): array {
+            $probe = function (string $username) use ($server_prefix, $imap_pass): array {
                 $spec   = $server_prefix . 'INBOX';
                 imap_errors(); // clear prior error stack
                 $stream = @imap_open($spec, $username, $imap_pass, 0, 2, ['DISABLE_AUTHENTICATOR' => 'GSSAPI']);

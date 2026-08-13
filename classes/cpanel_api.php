@@ -32,7 +32,6 @@ require_once($CFG->libdir . '/filelib.php');
  *   ['success' => bool, 'message' => string, 'data' => mixed]
  */
 class cpanel_api {
-
     /** @var string cPanel hostname (no scheme, no port) */
     private $host;
     /** @var int cPanel port (default 2083) */

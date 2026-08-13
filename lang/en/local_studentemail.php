@@ -215,3 +215,5 @@ $string['webmail_archived']         = 'Your email account has been archived. Ple
 $string['webmail_redirecting']      = 'Opening your email inbox...';
 $string['webmail_open_manually']    = 'Click here if you are not redirected automatically';
 $string['webmail_youraddress']      = 'Your email address: {$a}';
+
+$string['privacy:metadata'] = 'The local_studentemail plugin does not store any personal data.';

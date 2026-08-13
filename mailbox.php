@@ -2194,14 +2194,14 @@ function renderExtraFolders(folders) {
   var standard = ['inbox', 'sent', 'drafts', 'trash', 'spam', 'junk', 'deleted'];
   var ordered = [], extras = [];
   // Separate standard from non-standard preserving server names.
-  folders.forEach(function(f) {
+  folders.forEach(function (f) {
     var lo = f.toLowerCase().replace(/^inbox\./i, '');
-    var isStandard = standard.some(function(s) { return lo.indexOf(s) >= 0; });
+    var isStandard = standard.some(function (s) { return lo.indexOf(s) >= 0; });
     if (isStandard) { ordered.push(f); } else { extras.push(f); }
   });
   var all = ordered.concat(extras);
   var firstExtra = ordered.length; // divider position
-  all.forEach(function(f, idx) {
+  all.forEach(function (f, idx) {
     if (idx === firstExtra && extras.length > 0) {
       html += '<div class="sem-folder-divider"></div>';
     }

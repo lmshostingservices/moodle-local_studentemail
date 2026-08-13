@@ -23,7 +23,6 @@ namespace local_studentemail;
 defined('MOODLE_INTERNAL') || die();
 
 class imap_client {
-
     /** @var string Full IMAP mailbox spec e.g. {mail.host:993/imap/ssl}INBOX */
     private string $mailbox_spec;
     /** @var string Email address used as username */
@@ -510,7 +509,7 @@ class imap_client {
 
         // Reset SMTP debug log for this send attempt.
         $this->smtp_debug_log = '';
-        $dbg = function(string $line): void {
+        $dbg = function (string $line): void {
             $this->smtp_debug_log .= '[' . date('H:i:s') . '] ' . $line . "\n";
         };
 
@@ -522,7 +521,7 @@ class imap_client {
         // Capture the full SMTP conversation so it can be returned in the JSON
         // response and logged to the browser console via semDebug().
         $mail->SMTPDebug   = 3;
-        $mail->Debugoutput = function(string $str, int $level) use ($dbg): void {
+        $mail->Debugoutput = function (string $str, int $level) use ($dbg): void {
             $dbg('SMTP> ' . trim($str));
         };
         $mail->Timeout       = 5;

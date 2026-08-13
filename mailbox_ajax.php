@@ -228,7 +228,7 @@ try {
 
             // Shutdown handler: fires on max_execution_time fatal.
             // CRITICAL: must call flush() after echo or PHP-FPM drops bytes on kill.
-            register_shutdown_function(function() use ($sem_log) {
+            register_shutdown_function(function () use ($sem_log) {
                 $err = error_get_last();
                 $ts  = date('Y-m-d H:i:s');
                 if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
@@ -265,7 +265,7 @@ try {
             sem_step(11, 'calling-send_message', $sem_log);
             // Helper: convert any string to clean UTF-8 so json_encode never
             // returns false (SMTP conversations often contain Latin-1 or binary bytes).
-            $sem_utf8 = function($s) {
+            $sem_utf8 = function ($s) {
                 if (!is_string($s)) { return (string)$s; }
                 // Remove ASCII control chars in RAW BYTE mode (no /u flag) so
                 // non-UTF-8 input never causes preg_replace to return null.
@@ -276,8 +276,8 @@ try {
             };
             // Fallback encoder: if json_encode still returns false, return a safe
             // plain-English payload so the browser always gets valid JSON.
-            $sem_json = function(array $data) use ($sem_utf8) {
-                array_walk_recursive($data, function(&$v) use ($sem_utf8) {
+            $sem_json = function (array $data) use ($sem_utf8) {
+                array_walk_recursive($data, function (&$v) use ($sem_utf8) {
                     if (is_string($v)) { $v = $sem_utf8($v); }
                 });
                 $out = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR);

@@ -273,10 +273,10 @@ echo $OUTPUT->header();
   </p>
 
   <script>
-  (function() {
+  (function () {
     var revealed = false;
 
-    window.toggleReveal = function() {
+    window.toggleReveal = function () {
       var el  = document.getElementById('pass-text');
       var btn = document.getElementById('reveal-btn');
       revealed = !revealed;
@@ -291,24 +291,24 @@ echo $OUTPUT->header();
       }
     };
 
-    window.copyText = function(id, btn) {
+    window.copyText = function (id, btn) {
       var text = document.getElementById(id).textContent;
-      navigator.clipboard.writeText(text).then(function() {
+      navigator.clipboard.writeText(text).then(function () {
         btn.textContent = 'Copied!';
         btn.classList.add('copied');
-        setTimeout(function() { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
-      }).catch(function() {
+        setTimeout(function () { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+      }).catch(function () {
         fallbackCopy(text);
       });
     };
 
-    window.copyReal = function(id, btn) {
+    window.copyReal = function (id, btn) {
       var text = document.getElementById(id).dataset.real;
-      navigator.clipboard.writeText(text).then(function() {
+      navigator.clipboard.writeText(text).then(function () {
         btn.textContent = 'Copied!';
         btn.classList.add('copied');
-        setTimeout(function() { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
-      }).catch(function() {
+        setTimeout(function () { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+      }).catch(function () {
         fallbackCopy(text);
       });
     };

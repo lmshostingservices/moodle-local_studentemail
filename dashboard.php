@@ -449,7 +449,7 @@ var searchTimer   = null;
 function setFilter(filter) {
   currentFilter = filter;
   currentPage   = 0;
-  document.querySelectorAll('.sem-stat').forEach(function(el) {
+  document.querySelectorAll('.sem-stat').forEach(function (el) {
     el.classList.toggle('active-filter', el.dataset.filter === filter);
   });
   var sel = document.getElementById('sem-filter-select');
@@ -460,7 +460,7 @@ function setFilter(filter) {
 function setFilterFromDropdown(filter) {
   currentFilter = filter;
   currentPage   = 0;
-  document.querySelectorAll('.sem-stat').forEach(function(el) {
+  document.querySelectorAll('.sem-stat').forEach(function (el) {
     el.classList.toggle('active-filter', el.dataset.filter === filter);
   });
   loadAccounts();
@@ -468,7 +468,7 @@ function setFilterFromDropdown(filter) {
 
 function debounceSearch(val) {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(function() {
+  searchTimer = setTimeout(function () {
     currentSearch = val;
     currentPage   = 0;
     loadAccounts();
@@ -490,7 +490,7 @@ function loadAccounts() {
     filter: currentFilter,
     page:   currentPage,
     perpage: perPage
-  }, function(resp) {
+  }, function (resp) {
     if (!resp.success) { showAlert(resp.message, 'error'); return; }
     totalRecords = resp.data.total;
     renderTable(resp.data.records);
@@ -507,7 +507,7 @@ function renderTable(records) {
   }
 
   var html = '';
-  records.forEach(function(r) {
+  records.forEach(function (r) {
     var email     = r.provisioned_email || '';
     var status    = r.status || 'none';
     var isLinked  = !!email && status !== 'none' && status !== 'error';
@@ -614,7 +614,7 @@ function toggleLinkForm(btnEl, userid) {
   if (inp)     inp.style.display = 'none';
   if (linkBtn) linkBtn.style.display = 'none';
 
-  ajax('list_cpanel_accounts', {}, function(resp) {
+  ajax('list_cpanel_accounts', {}, function (resp) {
     if (loading) loading.style.display = 'none';
     if (!resp.success) {
       // cPanel unavailable — fall back to manual text input.
@@ -632,7 +632,7 @@ function toggleLinkForm(btnEl, userid) {
     // Populate dropdown — selecting auto-links (no extra click needed).
     if (sel) {
       sel.innerHTML = '<option value="">— pick a cPanel account —</option>'
-        + resp.accounts.map(function(e) {
+        + resp.accounts.map(function (e) {
             return '<option value="' + esc(e) + '">' + esc(e) + '</option>';
           }).join('');
       sel.style.display = '';
@@ -652,7 +652,7 @@ function doLinkSelect(userid) {
   if (!sel || !sel.value) return;
   var email = sel.value;
   sel.disabled = true;
-  ajax('link_account', {userid: userid, email: email}, function(resp) {
+  ajax('link_account', {userid: userid, email: email}, function (resp) {
     sel.disabled = false;
     if (resp.success) {
       showAlert(resp.message, 'success');
@@ -667,7 +667,7 @@ function doLinkSelect(userid) {
 function doLink(userid) {
   var inp = document.getElementById('lf-input-' + userid);
   if (!inp || !inp.value.trim()) { showAlert('Please enter an email address.', 'error'); return; }
-  ajax('link_account', {userid: userid, email: inp.value.trim()}, function(resp) {
+  ajax('link_account', {userid: userid, email: inp.value.trim()}, function (resp) {
     if (resp.success) {
       showAlert(resp.message, 'success');
       loadAccounts();
@@ -688,7 +688,7 @@ function renderPagination() {
 }
 
 function loadStats() {
-  ajax('get_stats', {}, function(resp) {
+  ajax('get_stats', {}, function (resp) {
     if (!resp.success) return;
     var s = resp.stats;
     document.getElementById('stat-total').textContent     = s.total;
@@ -707,7 +707,7 @@ function doRestore(userid) { rowAction('restore_email', userid, 'Restoring...');
 function doArchive(userid) { rowAction('archive_email', userid, 'Archiving...'); }
 function doResetPW(userid) {
   if (!confirm('Reset password for this student? The new password will be shown here once.')) return;
-  ajax('reset_password', {userid: userid}, function(resp) {
+  ajax('reset_password', {userid: userid}, function (resp) {
     if (resp.success) {
       showAlert('Password reset. New password: <strong>' + esc(resp.new_password) + '</strong> for ' + esc(resp.email), 'success');
       loadAccounts();
@@ -719,14 +719,14 @@ function doResetPW(userid) {
 
 function doResendWelcome(userid) {
   if (!confirm('Re-send the welcome email with college email address and password to this student\'s personal email address?')) return;
-  ajax('resend_welcome', {userid: userid}, function(resp) {
+  ajax('resend_welcome', {userid: userid}, function (resp) {
     showAlert(resp.message, resp.success ? 'success' : 'error');
   });
 }
 
 function rowAction(action, userid, msg) {
   showAlert(msg, 'success');
-  ajax(action, {userid: userid}, function(resp) {
+  ajax(action, {userid: userid}, function (resp) {
     showAlert(resp.message, resp.success ? 'success' : 'error');
     if (resp.success) loadAccounts();
   });
@@ -743,7 +743,7 @@ function bulkImport() {
     'Safe to run multiple times. Continue?'
   )) return;
   showAlert('Fetching cPanel accounts and matching to Moodle users… this may take a moment.', 'success');
-  ajax('import_existing', {}, function(resp) {
+  ajax('import_existing', {}, function (resp) {
     var type = resp.success ? 'success' : 'error';
     showAlert(resp.message, type);
     if (resp.success) loadAccounts();
@@ -758,7 +758,7 @@ function bulkAction(action) {
   };
   if (!confirm(labels[action] || 'Continue?')) return;
   showAlert('Working… this may take a moment for large groups.', 'success');
-  ajax(action, {}, function(resp) {
+  ajax(action, {}, function (resp) {
     showAlert(resp.message, resp.success ? 'success' : 'error');
     loadAccounts();
   });
@@ -766,7 +766,7 @@ function bulkAction(action) {
 
 function testConnection() {
   showAlert('Testing cPanel connection…', 'success');
-  ajax('test_connection', {}, function(resp) {
+  ajax('test_connection', {}, function (resp) {
     showAlert(
       resp.success ? 'cPanel connection successful! The API can reach your server.' : 'Connection failed: ' + resp.message,
       resp.success ? 'success' : 'error'
@@ -777,7 +777,7 @@ function testConnection() {
 function fixMissingPasswords() {
   if (!confirm('This will auto-generate new cPanel passwords for all active accounts that have no stored password (imported accounts). Students can then open their mailbox immediately. Continue?')) return;
   showAlert('Fixing missing passwords…', 'success');
-  ajax('fix_missing_passwords', {}, function(resp) {
+  ajax('fix_missing_passwords', {}, function (resp) {
     showAlert(resp.message, resp.success ? 'success' : 'error');
     if (resp.fixed > 0) { loadAccounts(); }
   });
@@ -786,7 +786,7 @@ function fixMissingPasswords() {
 function resetAllPasswords() {
   if (!confirm('This will generate a NEW cPanel password for every active linked account (all 468+). This fixes students who were linked via "Link Existing" and cannot log in to their mailbox.\n\nThis may take a minute. Continue?')) return;
   showAlert('Resetting all passwords — please wait…', 'success');
-  ajax('bulk_reset_all_passwords', {}, function(resp) {
+  ajax('bulk_reset_all_passwords', {}, function (resp) {
     showAlert(resp.message, resp.success ? 'success' : 'error');
     if (resp.fixed > 0) { loadAccounts(); }
   });
@@ -794,14 +794,14 @@ function resetAllPasswords() {
 
 function testImap() {
   showAlert('Running deep IMAP diagnostic — checking both username formats and all folders…', 'success');
-  ajax('test_imap', {}, function(resp) {
+  ajax('test_imap', {}, function (resp) {
     showImapDiagModal(resp);
   });
 }
 
 function testImapStudent(userid, email) {
   showAlert('Testing IMAP mailbox for ' + email + '…', 'success');
-  ajax('test_imap_student', {userid: userid}, function(resp) {
+  ajax('test_imap_student', {userid: userid}, function (resp) {
     showImapDiagModal(resp);
   });
 }
@@ -818,7 +818,7 @@ function showImapDiagModal(resp) {
     if (!result.folders || result.folders.length === 0) {
       return 'Connected — INBOX: <strong>' + result.inbox_count + '</strong> messages (no folder list returned)';
     }
-    var rows = result.folders.map(function(f) {
+    var rows = result.folders.map(function (f) {
       var highlight = (f.count > 0) ? ' style="color:#16a34a;font-weight:600"' : '';
       return '<tr' + highlight + '><td style="padding:2px 12px 2px 0">' + esc(f.folder) + '</td>'
            + '<td style="text-align:right">' + (f.count >= 0 ? f.count : '?') + '</td></tr>';
@@ -875,28 +875,28 @@ function showImapDiagModal(resp) {
     + '</div>';
 
   document.body.appendChild(modal);
-  modal.addEventListener('click', function(e) {
+  modal.addEventListener('click', function (e) {
     if (e.target === modal) modal.remove();
   });
 }
 
 function testSmtp() {
   showAlert('Testing outgoing SMTP connection…', 'success');
-  ajax('test_smtp', {}, function(resp) {
+  ajax('test_smtp', {}, function (resp) {
     showAlert(resp.message, resp.success ? 'success' : 'error');
   });
 }
 
 function ajax(action, params, callback) {
   var data = Object.assign({action: action, sesskey: SESSKEY}, params);
-  var qs   = Object.keys(data).map(function(k) {
+  var qs   = Object.keys(data).map(function (k) {
     return encodeURIComponent(k) + '=' + encodeURIComponent(data[k] !== undefined && data[k] !== null ? data[k] : '');
   }).join('&');
 
   var xhr = new XMLHttpRequest();
   xhr.open('POST', AJAX_URL, true);
   xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-  xhr.onreadystatechange = function() {
+  xhr.onreadystatechange = function () {
     if (xhr.readyState !== 4) return;
     try {
       callback(JSON.parse(xhr.responseText));
@@ -914,7 +914,7 @@ function showAlert(msg, type) {
   el.style.display = 'block';
   clearTimeout(el._timer);
   if (type === 'success') {
-    el._timer = setTimeout(function() { el.style.display = 'none'; }, 8000);
+    el._timer = setTimeout(function () { el.style.display = 'none'; }, 8000);
   }
 }
 
@@ -927,7 +927,7 @@ loadAccounts();
 // =========================================================
 function runDiagnose() {
   showAlert('Running import diagnostic — fetching raw cPanel data…', 'success');
-  ajax('diagnose_import', {}, function(resp) {
+  ajax('diagnose_import', {}, function (resp) {
     var w = window.open('', '_blank', 'width=900,height=700,scrollbars=yes');
     if (!w) { showAlert('Pop-up blocked — allow pop-ups and try again.', 'error'); return; }
 
@@ -954,7 +954,7 @@ function runDiagnose() {
     lines.push('<h2>4. Parsed Localparts (first 20 accounts) — old vs fixed logic</h2>');
     if (resp.parsed_20 && resp.parsed_20.length) {
       lines.push('<table><thead><tr><th>login field (raw)</th><th>email field (raw)</th><th>user field (raw)</th><th>OLD localpart (was buggy)</th><th>NEW localpart (fixed)</th><th>Match?</th></tr></thead><tbody>');
-      resp.parsed_20.forEach(function(p) {
+      resp.parsed_20.forEach(function (p) {
         var same = p.old_localpart === p.new_localpart;
         var hasat = p.old_localpart.indexOf('@') !== -1;
         lines.push('<tr>'
@@ -974,7 +974,7 @@ function runDiagnose() {
     lines.push('<h2>5. SQL: Current DB State — ' + resp.sql_total_linked + ' linked accounts</h2>');
     lines.push('<p><strong>Status breakdown:</strong> ');
     if (resp.sql_status_breakdown && resp.sql_status_breakdown.length) {
-      lines.push(resp.sql_status_breakdown.map(function(r) { return r.status + ': ' + r.cnt; }).join(' | '));
+      lines.push(resp.sql_status_breakdown.map(function (r) { return r.status + ': ' + r.cnt; }).join(' | '));
     }
     lines.push('</p>');
 
@@ -982,7 +982,7 @@ function runDiagnose() {
     if (resp.sql_email_duplicates && resp.sql_email_duplicates.length) {
       lines.push('<p class="bad">These emails are already linked to multiple users — this is what caused "Error writing to database":</p>');
       lines.push('<table><thead><tr><th>Email</th><th>Count</th><th>User IDs</th></tr></thead><tbody>');
-      resp.sql_email_duplicates.forEach(function(r) {
+      resp.sql_email_duplicates.forEach(function (r) {
         lines.push('<tr><td class="bad">' + esc(r.email) + '</td><td>' + r.cnt + '</td><td>' + esc(r.userids) + '</td></tr>');
       });
       lines.push('</tbody></table>');
@@ -994,7 +994,7 @@ function runDiagnose() {
     if (resp.sql_name_duplicates && resp.sql_name_duplicates.length) {
       lines.push('<p>These users share the same name — only the first one matched by username will be linked; the rest need manual Link Existing:</p>');
       lines.push('<table><thead><tr><th>First Name</th><th>Last Name</th><th>Count</th><th>User IDs</th><th>Usernames</th></tr></thead><tbody>');
-      resp.sql_name_duplicates.forEach(function(r) {
+      resp.sql_name_duplicates.forEach(function (r) {
         lines.push('<tr>'
           + '<td>' + esc(r.firstname) + '</td>'
           + '<td>' + esc(r.lastname) + '</td>'
@@ -1012,7 +1012,7 @@ function runDiagnose() {
     lines.push('<h2>8. Unlinked Moodle Users (' + resp.unlinked_total + ' remaining) — first 5 + their match candidates</h2>');
     if (resp.unlinked_samples && resp.unlinked_samples.length) {
       lines.push('<table><thead><tr><th>User ID</th><th>Moodle username</th><th>Moodle email</th><th>Candidates sent to cPanel map</th></tr></thead><tbody>');
-      resp.unlinked_samples.forEach(function(u) {
+      resp.unlinked_samples.forEach(function (u) {
         lines.push('<tr>'
           + '<td>' + u.userid + '</td>'
           + '<td>' + esc(u.username) + '</td>'
@@ -1038,7 +1038,7 @@ function runDiagnose() {
 function openDataQuality() {
   document.getElementById('sem-dq-body').innerHTML = '<div class="sem-dq-loading">Running checks…</div>';
   document.getElementById('sem-dq-overlay').classList.add('open');
-  ajax('get_data_quality', {}, function(resp) {
+  ajax('get_data_quality', {}, function (resp) {
     if (!resp.success) {
       document.getElementById('sem-dq-body').innerHTML = '<p style="color:#dc2626">Error: ' + (resp.message || 'Unknown error') + '</p>';
       return;
@@ -1069,7 +1069,7 @@ function renderDataQuality(data) {
     html += '<div class="sem-dq-none">No duplicate names found.</div>';
   } else {
     html += '<table class="sem-dq-table"><thead><tr><th>Name</th><th>Account A</th><th>Account B</th></tr></thead><tbody>';
-    data.duplicates.forEach(function(d) {
+    data.duplicates.forEach(function (d) {
       var a1 = '<div class="sem-dq-account">'
              + '<div><span class="lbl">User&nbsp;ID:</span> <span class="val">' + d.userid1 + '</span></div>'
              + '<div><span class="lbl">Username:</span> <span class="val">' + esc(d.username1) + '</span></div>'
@@ -1100,7 +1100,7 @@ function renderDataQuality(data) {
     html += '<div class="sem-dq-none">No users have multiple SEM records.</div>';
   } else {
     html += '<table class="sem-dq-table"><thead><tr><th>Name</th><th>Username</th><th>Records</th><th>Emails</th></tr></thead><tbody>';
-    data.multi.forEach(function(m) {
+    data.multi.forEach(function (m) {
       html += '<tr><td>' + esc(m.name) + '</td><td>' + esc(m.username) + '</td>'
             + '<td><span class="sem-dq-warn">' + m.count + '</span></td>'
             + '<td style="font-size:.76rem">' + esc(m.sem_emails) + '</td></tr>';
@@ -1118,7 +1118,7 @@ function renderDataQuality(data) {
     html += '<div class="sem-dq-none">No orphaned records.</div>';
   } else {
     html += '<table class="sem-dq-table"><thead><tr><th>Record ID</th><th>Moodle User ID</th><th>cPanel Email</th><th>Status</th></tr></thead><tbody>';
-    data.orphans.forEach(function(o) {
+    data.orphans.forEach(function (o) {
       html += '<tr><td>' + o.record_id + '</td><td>' + o.userid + '</td><td>' + esc(o.sem_email) + '</td><td>' + esc(o.status) + '</td></tr>';
     });
     html += '</tbody></table>';
@@ -1135,7 +1135,7 @@ function renderDataQuality(data) {
     html += '<div class="sem-dq-none">No mismatches found.</div>';
   } else {
     html += '<table class="sem-dq-table"><thead><tr><th>Name</th><th>Username</th><th>cPanel Email</th></tr></thead><tbody>';
-    data.mismatches.forEach(function(m) {
+    data.mismatches.forEach(function (m) {
       html += '<tr><td>' + esc(m.name) + '</td><td>' + esc(m.username) + '</td><td>' + esc(m.sem_email) + '</td></tr>';
     });
     html += '</tbody></table>';

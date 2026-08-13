@@ -1,4 +1,19 @@
 <?php
+// This file is part of Moodle - http://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+
 /**
  * Plugin unlock verification for Student Email Manager.
  * Deducts 5,000 credits on first use; permanently unlocks the plugin for this site.
@@ -13,7 +28,6 @@ namespace local_studentemail;
 defined('MOODLE_INTERNAL') || die();
 
 class unlock_verifier {
-
     const PLUGIN_ID       = 'studentemail';
     const CREDITS_REQUIRED = 5000;
     const API_URL         = 'https://lms-labs.com/api/plugin-unlock/verify';
