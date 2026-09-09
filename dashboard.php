@@ -267,9 +267,12 @@ echo $OUTPUT->header();
     </div>
     <div class="sem-header-actions">
       <button class="btn-bulk-outline" onclick="runDiagnose()" title="Diagnose why Import Existing is not matching — shows raw cPanel API response and candidate matching for the first 5 unlinked students." style="border-color:#d97706;color:#d97706;">Diagnose Import</button>
-      <button class="btn-bulk-outline" onclick="openDataQuality()" title="Run data quality checks: duplicate Moodle accounts, multiple email records per student, orphaned records, suspended mismatches.">Data Quality Report</button>
+      <button class="btn-bulk-outline" onclick="openDataQuality()" title="Run data quality checks: duplicate Moodle accounts, multiple email records per student, orphaned records, suspended mismatches, students split across two mailboxes.">Data Quality Report</button>
       <a href="<?php echo $settings_url; ?>" class="btn-bulk-outline" style="text-decoration:none;display:inline-block;">Settings</a>
-      <a href="<?php echo $download_url; ?>" class="btn-bulk" style="text-decoration:none;display:inline-block;"><?php echo get_string('action_download_report', 'local_studentemail'); ?></a>
+      <a href="<?php echo $download_url; ?>"
+         class="btn-bulk" style="text-decoration:none;display:inline-block;">
+        <?php echo get_string('action_download_report', 'local_studentemail'); ?>
+      </a>
     </div>
   </div>
 
@@ -547,6 +550,8 @@ function renderTable(records) {
         actions += btn('Reset PW',     'btn-reset',   'doResetPW(' + r.id + ')',  'Set a new password and display it here');
         actions += btn('Resend Creds', 'btn-reset',   'doResendWelcome(' + r.id + ')', 'Re-send college email address and password to student\'s personal email');
         actions += btn('Test Mailbox', 'btn-bulk-outline', 'testImapStudent(' + r.id + ',' + JSON.stringify(r.email || '') + ')', 'Deep IMAP diagnostic — shows exact folders, message counts, and which username format works');
+        actions += btn('Relink', 'btn-link', 'toggleLinkForm(this,' + r.id + ')', 'Point this student at a different mailbox — choose which address to keep');
+        actions += btn('Unlink', 'btn-bulk-outline', 'doUnlink(' + r.id + ')', 'Remove the link to this mailbox. The mailbox and all its mail stay on the server.');
         if (WEBMAIL) {
           actions += btn('Webmail', 'btn-webmail', "window.open('" + WEBMAIL + "','_blank')", 'Open webmail in new tab');
         }
@@ -577,7 +582,8 @@ function renderTable(records) {
       : '<span style="color:#94a3b8;">—</span>';
 
     html += '<tr>'
-      + '<td><strong>' + esc(r.fullname) + '</strong><br><small style="color:#94a3b8;">' + esc(r.username) + (r.idnumber ? ' · ' + esc(r.idnumber) : '') + '</small></td>'
+      + '<td><strong>' + esc(r.fullname) + '</strong><br><small style="color:#94a3b8;">' + esc(r.username) + (r.idnumber ? ' · ' + esc(r.idnumber) : '') + '</small>'
+        + profileLine(r, email) + '</td>'
       + '<td>' + emailCell + '</td>'
       + '<td><span class="sem-badge ' + badgeClass + '">' + badgeLabel + '</span></td>'
       + '<td style="color:#94a3b8;font-size:.8rem;">' + (r.email_date || '<span style="color:#cbd5e1;">—</span>') + '</td>'
@@ -586,6 +592,22 @@ function renderTable(records) {
   });
 
   tbody.innerHTML = html;
+}
+
+/**
+ * The student's Moodle profile address, flagged when Moodle mails one mailbox
+ * while the plugin has linked a different one.
+ */
+function profileLine(r, linkedEmail) {
+  var profile = (r.moodle_email || '').toLowerCase();
+  if (!profile) { return ''; }
+  var linked = (linkedEmail || '').toLowerCase();
+  var split  = linked && profile !== linked;
+  if (!split) {
+    return '<br><small style="color:#cbd5e1;">Moodle: ' + esc(r.moodle_email) + '</small>';
+  }
+  return '<br><small class="sem-dq-warn" title="Moodle sends this student\'s mail here, but the plugin has linked a different mailbox — they never see it.">'
+    + '&#9888; Moodle mails: ' + esc(r.moodle_email) + '</small>';
 }
 
 function btn(label, cls, onclick, title) {
@@ -614,7 +636,7 @@ function toggleLinkForm(btnEl, userid) {
   if (inp)     inp.style.display = 'none';
   if (linkBtn) linkBtn.style.display = 'none';
 
-  ajax('list_cpanel_accounts', {}, function (resp) {
+  ajax('list_cpanel_accounts', { userid: userid }, function (resp) {
     if (loading) loading.style.display = 'none';
     if (!resp.success) {
       // cPanel unavailable — fall back to manual text input.
@@ -631,10 +653,23 @@ function toggleLinkForm(btnEl, userid) {
     }
     // Populate dropdown — selecting auto-links (no extra click needed).
     if (sel) {
-      sel.innerHTML = '<option value="">— pick a cPanel account —</option>'
-        + resp.accounts.map(function (e) {
-            return '<option value="' + esc(e) + '">' + esc(e) + '</option>';
-          }).join('');
+      var opts = (resp.options && resp.options.length) ? resp.options : null;
+      if (opts) {
+        // Per-student list: label which address Moodle uses and which is
+        // linked now, so the choice between them is explicit.
+        sel.innerHTML = '<option value="">— choose which mailbox to keep —</option>'
+          + opts.map(function (o) {
+              var label = o.email;
+              if (o.recommended) { label += '  ✔ matches Moodle profile'; }
+              if (o.current)     { label += '  (linked now)'; }
+              return '<option value="' + esc(o.email) + '">' + esc(label) + '</option>';
+            }).join('');
+      } else {
+        sel.innerHTML = '<option value="">— pick a cPanel account —</option>'
+          + resp.accounts.map(function (e) {
+              return '<option value="' + esc(e) + '">' + esc(e) + '</option>';
+            }).join('');
+      }
       sel.style.display = '';
       sel.focus();
     }
@@ -651,6 +686,15 @@ function doLinkSelect(userid) {
   var sel = document.getElementById('lf-select-' + userid);
   if (!sel || !sel.value) return;
   var email = sel.value;
+  if (!confirm('Link this student to ' + email + '?\n\n' +
+      'A new cPanel password is set on that mailbox and the credentials are ' +
+      'emailed to the student, so anyone signed in to it (webmail or a mail ' +
+      'client) must sign in again. No mail is deleted, and any mailbox this ' +
+      'student was linked to before is left untouched on the server.')) {
+    // Clear the choice so picking the same option again re-opens this prompt.
+    sel.value = '';
+    return;
+  }
   sel.disabled = true;
   ajax('link_account', {userid: userid, email: email}, function (resp) {
     sel.disabled = false;
@@ -664,6 +708,29 @@ function doLinkSelect(userid) {
 }
 
 // Fallback: manual text entry → Link button.
+/**
+ * Remove the plugin's link to a mailbox. The mailbox itself is untouched, so
+ * the student can be linked to a different address afterwards.
+ */
+function doUnlink(userid) {
+  if (!confirm('Unlink this student from their mailbox?\n\n' +
+      'This removes the link inside Moodle only. The mailbox and every message ' +
+      'in it stay on the server, and you can link the student to any mailbox ' +
+      'afterwards — including this one.\n\n' +
+      'Until they are linked again, this student\'s mailbox page in Moodle will ' +
+      'show no account.')) {
+    return;
+  }
+  ajax('unlink_account', { userid: userid }, function (resp) {
+    if (resp.success) {
+      showAlert(resp.message, 'success');
+      loadAccounts();
+    } else {
+      showAlert(resp.message, 'error');
+    }
+  });
+}
+
 function doLink(userid) {
   var inp = document.getElementById('lf-input-' + userid);
   if (!inp || !inp.value.trim()) { showAlert('Please enter an email address.', 'error'); return; }
@@ -933,8 +1000,11 @@ function runDiagnose() {
 
     var lines = [];
     lines.push('<html><head><title>Import Diagnostic</title>');
-    lines.push('<style>body{font-family:monospace;font-size:13px;padding:1rem;} h2{font-size:1rem;margin:1rem 0 .3rem;border-bottom:2px solid #333;} .ok{color:#16a34a;font-weight:700;} .bad{color:#dc2626;font-weight:700;} table{border-collapse:collapse;width:100%;margin-bottom:1rem;} th,td{border:1px solid #ddd;padding:.3rem .5rem;text-align:left;font-size:.8rem;} th{background:#f1f5f9;} pre{background:#f8fafc;border:1px solid #e2e8f0;padding:.5rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;}</style>');
-    lines.push('</head><body>');
+    // Standalone diagnostic window: every selector is scoped under the plugin
+    // wrapper id so no rule can leak into a Moodle page if this markup is ever
+    // reused inside one.
+    lines.push('<style>#sem-diagnostic{font-family:monospace;font-size:13px;padding:1rem;} #sem-diagnostic h2{font-size:1rem;margin:1rem 0 .3rem;border-bottom:2px solid #333;} #sem-diagnostic .ok{color:#16a34a;font-weight:700;} #sem-diagnostic .bad{color:#dc2626;font-weight:700;} #sem-diagnostic table{border-collapse:collapse;width:100%;margin-bottom:1rem;} #sem-diagnostic th,#sem-diagnostic td{border:1px solid #ddd;padding:.3rem .5rem;text-align:left;font-size:.8rem;} #sem-diagnostic th{background:#f1f5f9;} #sem-diagnostic pre{background:#f8fafc;border:1px solid #e2e8f0;padding:.5rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;}</style>');
+    lines.push('</head><body><div id="sem-diagnostic">');
 
     lines.push('<h2>1. Plugin Configuration</h2>');
     lines.push('<p>Configured email domain: <strong>' + esc(resp.domain_config || '(empty — check Settings!)') + '</strong></p>');
@@ -1025,7 +1095,7 @@ function runDiagnose() {
       lines.push('<p class="ok">No unlinked users found — everyone is already linked!</p>');
     }
 
-    lines.push('</body></html>');
+    lines.push('</div></body></html>');
     w.document.write(lines.join(''));
     w.document.close();
     showAlert('Diagnostic report opened in new tab.', 'success');
@@ -1140,6 +1210,28 @@ function renderDataQuality(data) {
     });
     html += '</tbody></table>';
     html += '<p style="margin:.6rem 0 0;font-size:.78rem;color:#64748b;">Click "Suspend Leavers" on the dashboard toolbar to fix all these in one go.</p>';
+  }
+  html += '</div>';
+
+  // ---- 5. Student reading a different mailbox ---------------------
+  var splits = data.splits || [];
+  html += '<div class="sem-dq-section">';
+  html += '<p class="sem-dq-title">' + dqBadge(splits.length) + ' Student Reading a Different Mailbox</p>';
+  if (splits.length === 0) {
+    html += '<div class="sem-dq-none">No split mailboxes found.</div>';
+  } else {
+    html += '<table class="sem-dq-table"><thead><tr><th>Name</th><th>Username</th>'
+      + '<th>Moodle mails this address</th><th>Plugin opens this mailbox</th></tr></thead><tbody>';
+    splits.forEach(function (sp) {
+      html += '<tr><td>' + esc(sp.name) + '</td><td>' + esc(sp.username) + '</td>'
+        + '<td>' + esc(sp.moodle_email) + '</td>'
+        + '<td class="sem-dq-warn">' + esc(sp.sem_email) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    html += '<p style="margin:.6rem 0 0;font-size:.78rem;color:#64748b;">'
+      + 'These students have two mailboxes. Moodle sends their mail to the first address, '
+      + 'but the mailbox in Moodle signs in to the second, so they never see it. '
+      + 'Use <strong>Relink</strong> on the student row to choose which mailbox to keep.</p>';
   }
   html += '</div>';
 

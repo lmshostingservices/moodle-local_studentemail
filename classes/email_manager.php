@@ -25,6 +25,9 @@ defined('MOODLE_INTERNAL') || die();
  *   ['success' => bool, 'message' => string, ...extra]
  */
 class email_manager {
+    /** @var array|null Mailboxes on the server, keyed by local part; null until fetched */
+    private ?array $server_mailboxes = null;
+
     // Email format constants.
     const FORMAT_AUTONUMBER = 'autonumber';
     const FORMAT_USERNAME   = 'username';
@@ -67,14 +70,36 @@ class email_manager {
             return ['success' => false, 'message' => get_string('error_already_exists', 'local_studentemail')];
         }
 
+        $domain = get_config('local_studentemail', 'email_domain');
+
+        // Before minting a new address, check whether this student already has a
+        // mailbox on the mail server. Creating a second one silently splits the
+        // student in two: Moodle keeps mailing the address in their profile
+        // while the mailbox client signs in to the new one, so they never see
+        // their own mail.
+        if (get_config('local_studentemail', 'prefer_existing_mailbox') !== '0') {
+            $existingmailbox = $this->find_existing_mailbox($user, $domain);
+            if ($existingmailbox !== '') {
+                $linked = $this->link_account($user->id, $existingmailbox);
+                if (!empty($linked['success'])) {
+                    $linked['message'] = get_string(
+                        'success_linked_existing',
+                        'local_studentemail',
+                        $existingmailbox
+                    );
+                    $linked['linked_existing'] = true;
+                }
+                return $linked;
+            }
+        }
+
         // Generate email address.
         $localpart = $this->generate_localpart($user);
         if (empty($localpart)) {
             return ['success' => false, 'message' => get_string('error_format', 'local_studentemail')];
         }
 
-        $domain = get_config('local_studentemail', 'email_domain');
-        $email  = $localpart . '@' . $domain;
+        $email = $localpart . '@' . $domain;
 
         // Generate password.
         $password = $this->generate_password();
@@ -124,13 +149,17 @@ class email_manager {
         $login_url   = $CFG->wwwroot . '/login/index.php';
         $subject     = get_string('welcome_email_subject', 'local_studentemail', $site_name);
 
-        $body_plain = get_string('welcome_email_body', 'local_studentemail', (object)[
-            'firstname' => $user->firstname,
-            'site'      => $site_name,
-            'email'     => $email,
-            'password'  => $password,
-            'loginurl'  => $login_url,
-        ]);
+        $body_plain = get_string(
+            'welcome_email_body',
+            'local_studentemail',
+            (object)[
+                'firstname' => $user->firstname,
+                'site'      => $site_name,
+                'email'     => $email,
+                'password'  => $password,
+                'loginurl'  => $login_url,
+            ]
+        );
 
         $body_html = nl2br(htmlspecialchars($body_plain, ENT_QUOTES, 'UTF-8'));
 
@@ -187,11 +216,14 @@ class email_manager {
         $localpart = $this->email_to_localpart($account->email);
         $this->api->set_quota($localpart, 1);
 
-        $DB->update_record('local_studentemail_accounts', (object)[
-            'id'           => $account->id,
-            'status'       => self::STATUS_SUSPENDED,
-            'timemodified' => time(),
-        ]);
+        $DB->update_record(
+            'local_studentemail_accounts',
+            (object)[
+                'id'           => $account->id,
+                'status'       => self::STATUS_SUSPENDED,
+                'timemodified' => time(),
+            ]
+        );
 
         return ['success' => true, 'message' => get_string('success_suspended', 'local_studentemail')];
     }
@@ -211,11 +243,14 @@ class email_manager {
         $quota_mb  = (int)(get_config('local_studentemail', 'email_quota_mb') ?: 1024);
         $this->api->set_quota($localpart, $quota_mb);
 
-        $DB->update_record('local_studentemail_accounts', (object)[
-            'id'           => $account->id,
-            'status'       => self::STATUS_ACTIVE,
-            'timemodified' => time(),
-        ]);
+        $DB->update_record(
+            'local_studentemail_accounts',
+            (object)[
+                'id'           => $account->id,
+                'status'       => self::STATUS_ACTIVE,
+                'timemodified' => time(),
+            ]
+        );
 
         return ['success' => true, 'message' => get_string('success_restored', 'local_studentemail')];
     }
@@ -236,11 +271,14 @@ class email_manager {
         $random_pass = $this->generate_password() . $this->generate_password(); // Long unguessable.
         $this->api->change_password($localpart, $random_pass);
 
-        $DB->update_record('local_studentemail_accounts', (object)[
-            'id'           => $account->id,
-            'status'       => self::STATUS_ARCHIVED,
-            'timemodified' => time(),
-        ]);
+        $DB->update_record(
+            'local_studentemail_accounts',
+            (object)[
+                'id'           => $account->id,
+                'status'       => self::STATUS_ARCHIVED,
+                'timemodified' => time(),
+            ]
+        );
 
         return ['success' => true, 'message' => get_string('success_archived', 'local_studentemail')];
     }
@@ -264,12 +302,15 @@ class email_manager {
             return $result;
         }
 
-        $DB->update_record('local_studentemail_accounts', (object)[
-            'id'            => $account->id,
-            'emailpassword' => $this->encrypt_password($new_password),
-            'notes'         => '', // Clear any stale "Pwd externally managed" badge.
-            'timemodified'  => time(),
-        ]);
+        $DB->update_record(
+            'local_studentemail_accounts',
+            (object)[
+                'id'            => $account->id,
+                'emailpassword' => $this->encrypt_password($new_password),
+                'notes'         => '', // Clear any stale "Pwd externally managed" badge.
+                'timemodified'  => time(),
+            ]
+        );
 
         return [
             'success'      => true,
@@ -517,7 +558,7 @@ class email_manager {
                     $stored_pw = $new_password;
                     $notes     = '';
                 } else {
-                    // cPanel reset failed — save the row but flag it so admin can see.
+                    // The cPanel reset failed — save the row but flag it so an admin can see.
                     $notes = 'Imported — auto password reset failed: ' . $pw_result['message'] . '. Use Reset PW.';
                 }
 
@@ -592,6 +633,25 @@ class email_manager {
             return ['success' => false, 'message' => get_string('error_nocpanel', 'local_studentemail')];
         }
 
+        // The email column is unique. Linking a mailbox that belongs to another
+        // student would raise a database error, and would hand one student
+        // another student's mail, so refuse it with a readable message.
+        $owner = $DB->get_record_sql(
+            'SELECT userid FROM {local_studentemail_accounts} WHERE LOWER(email) = LOWER(?)',
+            [$email]
+        );
+        if ($owner && (int)$owner->userid !== $userid) {
+            $ownername = fullname($DB->get_record('user', ['id' => $owner->userid]));
+            return [
+                'success' => false,
+                'message' => get_string(
+                    'error_mailboxclaimed',
+                    'local_studentemail',
+                    (object)['email' => $email, 'name' => $ownername]
+                ),
+            ];
+        }
+
         $quota_mb = (int)(get_config('local_studentemail', 'email_quota_mb') ?: 1024);
 
         // Generate a fresh password and set it on cPanel so the plugin owns
@@ -627,6 +687,37 @@ class email_manager {
             'success' => true,
             'message' => $msg,
             'email'   => $email,
+        ];
+    }
+
+    /**
+     * Remove the plugin's link between a Moodle user and a mailbox.
+     *
+     * This deletes the plugin record only. The mailbox itself is left exactly
+     * as it is on the mail server, with all of its mail, so an unlink can
+     * always be undone by linking again. Use it to repoint a student who was
+     * linked to the wrong mailbox.
+     *
+     * @param  int $userid The Moodle user to unlink.
+     * @return array ['success' => bool, 'message' => string, 'email' => string]
+     */
+    public function unlink_account(int $userid): array {
+        global $DB;
+
+        $record = $DB->get_record('local_studentemail_accounts', ['userid' => $userid]);
+        if (!$record) {
+            return [
+                'success' => false,
+                'message' => get_string('error_notlinked', 'local_studentemail'),
+            ];
+        }
+
+        $DB->delete_records('local_studentemail_accounts', ['id' => $record->id]);
+
+        return [
+            'success' => true,
+            'message' => get_string('success_unlinked', 'local_studentemail', $record->email),
+            'email'   => $record->email,
         ];
     }
 
@@ -776,12 +867,46 @@ class email_manager {
             ];
         }
 
+        // 5. Students whose Moodle profile address is on the college domain but
+        //    is not the mailbox the plugin has linked. Moodle mails one mailbox
+        //    while the mailbox client signs in to the other, so the student
+        //    never sees their own mail.
+        $splits = [];
+        $domain = strtolower(trim((string)get_config('local_studentemail', 'email_domain')));
+        if ($domain !== '') {
+            $splitsql = "SELECT sea.id,
+                                u.id AS userid,
+                                u.firstname,
+                                u.lastname,
+                                u.username,
+                                u.email AS moodle_email,
+                                sea.email AS sem_email
+                           FROM {user} u
+                           JOIN {local_studentemail_accounts} sea ON sea.userid = u.id
+                          WHERE u.deleted = 0
+                            AND sea.email IS NOT NULL
+                            AND sea.email <> ''
+                            AND " . $DB->sql_like('u.email', ':domain', false) . "
+                            AND LOWER(u.email) <> LOWER(sea.email)";
+            $split_rows = $DB->get_records_sql($splitsql, ['domain' => '%@' . $domain]);
+            foreach ($split_rows as $r) {
+                $splits[] = [
+                    'userid'       => (int)$r->userid,
+                    'name'         => trim($r->firstname . ' ' . $r->lastname),
+                    'username'     => $r->username,
+                    'moodle_email' => $r->moodle_email,
+                    'sem_email'    => $r->sem_email,
+                ];
+            }
+        }
+
         return [
             'success'    => true,
             'duplicates' => $duplicates,
             'multi'      => $multi,
             'orphans'    => $orphans,
             'mismatches' => $mismatches,
+            'splits'     => $splits,
         ];
     }
 
@@ -865,7 +990,8 @@ class email_manager {
 
         $sql_where = implode(' AND ', $where);
 
-        $sql = "SELECT u.id, u.firstname, u.lastname, u.username, u.idnumber, u.suspended AS moodle_suspended,
+        $sql = "SELECT u.id, u.firstname, u.lastname, u.username, u.idnumber, u.email AS moodle_email,
+                       u.suspended AS moodle_suspended,
                        sea.id AS account_id, sea.email AS provisioned_email, sea.status, sea.timecreated AS email_created, sea.notes
                 FROM {user} u
                 LEFT JOIN {local_studentemail_accounts} sea ON sea.userid = u.id
@@ -920,17 +1046,20 @@ class email_manager {
         $lines   = [];
         $lines[] = 'First Name,Last Name,Username,Student ID,Moodle Email,College Email,Status,Created,Notes';
         foreach ($records as $row) {
-            $lines[] = implode(',', [
-                '"' . str_replace('"', '""', $row->firstname) . '"',
-                '"' . str_replace('"', '""', $row->lastname) . '"',
-                '"' . $row->username . '"',
-                '"' . $row->idnumber . '"',
-                '"' . $row->moodle_email . '"',
-                '"' . ($row->provisioned_email ?? '') . '"',
-                '"' . ($row->status ?? 'none') . '"',
-                '"' . ($row->timecreated ? date('Y-m-d', $row->timecreated) : '') . '"',
-                '"' . str_replace('"', '""', ($row->notes ?? '')) . '"',
-            ]);
+            $lines[] = implode(
+                ',',
+                [
+                    '"' . str_replace('"', '""', $row->firstname) . '"',
+                    '"' . str_replace('"', '""', $row->lastname) . '"',
+                    '"' . $row->username . '"',
+                    '"' . $row->idnumber . '"',
+                    '"' . $row->moodle_email . '"',
+                    '"' . ($row->provisioned_email ?? '') . '"',
+                    '"' . ($row->status ?? 'none') . '"',
+                    '"' . ($row->timecreated ? date('Y-m-d', $row->timecreated) : '') . '"',
+                    '"' . str_replace('"', '""', ($row->notes ?? '')) . '"',
+                ]
+            );
         }
 
         return implode("\n", $lines);
@@ -943,6 +1072,165 @@ class email_manager {
     /**
      * Generate the local part (before @) for a user's email address.
      */
+    /**
+     * Every mailbox on the mail server, keyed by lowercase local part.
+     *
+     * Cached for the life of the request: create_missing() provisions hundreds
+     * of students in one run, and asking cPanel once per student would be both
+     * slow and liable to hit the API rate limit.
+     *
+     * @param  string $domain The configured college mail domain.
+     * @return array [localpart => full email address]
+     */
+    private function get_server_mailboxes(string $domain): array {
+        if ($this->server_mailboxes !== null) {
+            return $this->server_mailboxes;
+        }
+        $this->server_mailboxes = [];
+
+        $listed = $this->api->list_accounts();
+        if (empty($listed['success']) || empty($listed['accounts'])) {
+            return $this->server_mailboxes;
+        }
+
+        foreach ($listed['accounts'] as $account) {
+            $raw = '';
+            foreach (['login', 'user', 'email'] as $field) {
+                if (!empty($account[$field])) {
+                    $raw = (string)$account[$field];
+                    break;
+                }
+            }
+            if ($raw === '') {
+                continue;
+            }
+            $localpart = strpos($raw, '@') !== false ? substr($raw, 0, strpos($raw, '@')) : $raw;
+            $localpart = strtolower(trim($localpart));
+            if ($localpart !== '') {
+                $this->server_mailboxes[$localpart] = $localpart . '@' . $domain;
+            }
+        }
+
+        return $this->server_mailboxes;
+    }
+
+    /**
+     * Build the local parts this user's mailbox could reasonably be named,
+     * in priority order.
+     *
+     * @param  \stdClass $user   The Moodle user.
+     * @param  string    $domain The configured college mail domain.
+     * @return array Lowercase local parts, most specific first.
+     */
+    private function build_match_candidates(\stdClass $user, string $domain): array {
+        $candidates = [];
+        $clean = function (string $value): string {
+            return strtolower(preg_replace('/[^a-z0-9._-]/i', '', $value));
+        };
+
+        // 1. The address already in the Moodle profile, but only when it is on
+        //    the college domain. This is where Moodle sends the student's mail,
+        //    so it is the strongest signal of which mailbox is really theirs.
+        //    A personal address (Gmail and the like) is deliberately ignored.
+        if (!empty($user->email) && $domain !== '') {
+            $parts = explode('@', strtolower(trim($user->email)));
+            if (count($parts) === 2 && $parts[1] === strtolower(trim($domain)) && $parts[0] !== '') {
+                $candidates[] = $parts[0];
+            }
+        }
+
+        // 2. Moodle username — the local part when it looks like an address,
+        //    then the sanitised username itself.
+        if (!empty($user->username)) {
+            if (strpos($user->username, '@') !== false) {
+                $localpartonly = strtolower(strtok($user->username, '@'));
+                if ($localpartonly !== '') {
+                    $candidates[] = $localpartonly;
+                }
+            }
+            $sanitised = $clean($user->username);
+            if ($sanitised !== '') {
+                $candidates[] = $sanitised;
+            }
+        }
+
+        // 3. Moodle ID number.
+        if (!empty($user->idnumber)) {
+            $idnumber = $clean($user->idnumber);
+            if ($idnumber !== '') {
+                $candidates[] = $idnumber;
+            }
+        }
+
+        // 4. The configured address format, unless it is the sequential
+        //    autonumber format, which can never match an existing mailbox.
+        $format = $this->get_format();
+        if ($format !== self::FORMAT_AUTONUMBER) {
+            $formatted = '';
+            if ($format === self::FORMAT_USERNAME && !empty($user->username)) {
+                $formatted = $clean($user->username);
+            } else if ($format === self::FORMAT_IDNUMBER && !empty($user->idnumber)) {
+                $formatted = $clean($user->idnumber);
+            } else if ($format === self::FORMAT_FIRSTLAST) {
+                $formatted = strtolower(preg_replace('/[^a-z]/i', '', $user->firstname))
+                    . '.' . strtolower(preg_replace('/[^a-z]/i', '', $user->lastname));
+            }
+            if ($formatted !== '' && $formatted !== '.') {
+                $candidates[] = $formatted;
+            }
+        }
+
+        // 5. The firstname.lastname fallback.
+        $firstlast = strtolower(preg_replace('/[^a-z]/i', '', $user->firstname))
+            . '.' . strtolower(preg_replace('/[^a-z]/i', '', $user->lastname));
+        if (strlen($firstlast) > 1) {
+            $candidates[] = $firstlast;
+        }
+
+        return array_values(array_unique(array_filter($candidates)));
+    }
+
+    /**
+     * Find a mailbox already on the mail server that belongs to this user.
+     *
+     * Only exact local-part matches are accepted, and a mailbox already linked
+     * to a different Moodle user is never returned, so this can not attach a
+     * student to somebody else's mail.
+     *
+     * @param  \stdClass $user   The Moodle user.
+     * @param  string    $domain The configured college mail domain.
+     * @return string Full email address, or '' when there is no safe match.
+     */
+    public function find_existing_mailbox(\stdClass $user, string $domain): string {
+        global $DB;
+
+        if ($domain === '' || !$this->api->is_configured()) {
+            return '';
+        }
+
+        $onserver = $this->get_server_mailboxes($domain);
+        if (empty($onserver)) {
+            return '';
+        }
+
+        // A mailbox already linked to somebody else is off limits.
+        $claimed = [];
+        $linkedrows = $DB->get_records('local_studentemail_accounts', null, '', 'userid, email');
+        foreach ($linkedrows as $row) {
+            if (!empty($row->email) && (int)$row->userid !== (int)$user->id) {
+                $claimed[strtolower($row->email)] = true;
+            }
+        }
+
+        foreach ($this->build_match_candidates($user, $domain) as $candidate) {
+            if (isset($onserver[$candidate]) && !isset($claimed[strtolower($onserver[$candidate])])) {
+                return $onserver[$candidate];
+            }
+        }
+
+        return '';
+    }
+
     private function generate_localpart(\stdClass $user): string {
         $format = $this->get_format();
 
@@ -979,7 +1267,7 @@ class email_manager {
      */
     private function claim_next_number(): int {
         $lockfactory = \core\lock\lock_config::get_lock_factory('local_studentemail');
-        $lock = $lockfactory->get_lock('email_number_claim', 15); // wait up to 15s
+        $lock = $lockfactory->get_lock('email_number_claim', 15); // Wait up to 15 seconds.
         if (!$lock) {
             throw new \moodle_exception('error_lock', 'local_studentemail',
                 '', null, 'Could not acquire email numbering lock after 15 seconds.');
@@ -1041,7 +1329,7 @@ class email_manager {
      * 12 chars: uppercase + lowercase + digits + symbols.
      */
     public function generate_password(): string {
-        // cPanel requires a password that contains at least one character from each
+        // A cPanel password must contain at least one character from each
         // of the four classes: lowercase, uppercase, digit, special.
         // We guarantee this by picking one from each class first, then filling
         // randomly from the full set, then shuffling.
@@ -1095,7 +1383,7 @@ class email_manager {
         }
         $key = $this->derive_key();
 
-        // v2 format: "v2:" prefix + base64(16-byte IV + ciphertext).
+        // Version 2 format: "v2:" prefix + base64(16-byte IV + ciphertext).
         if (strpos($encrypted, 'v2:') === 0) {
             $raw = base64_decode(substr($encrypted, 3));
             if (strlen($raw) > 16) {

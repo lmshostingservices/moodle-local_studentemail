@@ -26,7 +26,12 @@ use local_studentemail\email_manager;
 
 require_login();
 
-$PAGE->set_context(context_system::instance());
+$systemcontext = context_system::instance();
+// Students need the "view own student email" capability, which the plugin
+// grants to the authenticated user and student archetypes by default.
+require_capability('local/studentemail:viewown', $systemcontext);
+
+$PAGE->set_context($systemcontext);
 $PAGE->set_url(new moodle_url('/local/studentemail/mailbox.php'));
 $PAGE->set_title(get_string('mailbox_title', 'local_studentemail'));
 $PAGE->set_heading(get_string('mailbox_title', 'local_studentemail'));
@@ -263,10 +268,21 @@ echo $OUTPUT->header();
           <button class="sem-send-btn" onclick="SEM.sendMessage()">
             <span id="sem-send-label">Send</span>
           </button>
-          <button class="sem-cancel-btn" onclick="SEM.closeCompose()">Cancel</button>
+          <button class="sem-savedraft-btn" onclick="SEM.saveDraftNow()">
+            <span id="sem-savedraft-label"><?php echo s(get_string('savedraft', 'local_studentemail')); ?></span>
+          </button>
+          <button class="sem-cancel-btn" onclick="SEM.discardCompose()"><?php echo s(get_string('discard', 'local_studentemail')); ?></button>
           <span class="sem-send-status" id="sem-send-status"></span>
+          <span class="sem-draft-status" id="sem-draft-status"></span>
         </div>
       </div>
+    </div>
+
+    <!-- ── Unsaved-draft recovery bar (browser-local backup) ─────────── -->
+    <div class="sem-draft-recover" id="sem-draft-recover" style="display:none">
+      <span class="sem-draft-recover-text" id="sem-draft-recover-text"><?php echo s(get_string('draft_unsaved', 'local_studentemail')); ?></span>
+      <button class="sem-draft-recover-btn" onclick="SEM.restoreLocalDraft()"><?php echo s(get_string('restore', 'local_studentemail')); ?></button>
+      <button class="sem-draft-recover-dismiss" onclick="SEM.dismissLocalDraft()"><?php echo s(get_string('discard', 'local_studentemail')); ?></button>
     </div>
 
   </main>
@@ -1237,6 +1253,67 @@ echo $OUTPUT->header();
   margin-left: 4px;
 }
 
+/* ── Draft controls ────────────────────────── */
+.sem-savedraft-btn {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #3730a3;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.sem-savedraft-btn:hover { background: #e0e7ff; color: #3730a3; }
+.sem-savedraft-btn:disabled { opacity: 0.6; cursor: default; }
+
+.sem-draft-status {
+  font-size: 12px;
+  color: #6b7280;
+  margin-left: auto;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.sem-draft-recover {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #111827;
+  color: #f9fafb;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+}
+.sem-draft-recover-text { max-width: 320px; }
+.sem-draft-recover-btn {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sem-draft-recover-btn:hover { background: #1d4ed8; color: #fff; }
+.sem-draft-recover-dismiss {
+  background: none;
+  border: 1px solid #4b5563;
+  color: #d1d5db;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sem-draft-recover-dismiss:hover { background: #1f2937; color: #f9fafb; }
+
 /* ── Loading / empty ───────────────────────── */
 .sem-loading {
   display: flex;
@@ -1420,8 +1497,60 @@ var state = {
   folders:     [],
   signature:   mb.dataset.signature || '',
   isSearch:    false,
-  searchQuery: ''
+  searchQuery: '',
+  // ── Draft state ──────────────────────────────────────────────────────
+  draftId:        null,   // id of the draft currently in the compose pane
+  draftBaseline:  '',     // snapshot of compose content at open / last save
+  draftTimer:     null,   // autosave interval handle
+  draftBackupT:   null,   // debounce handle for the browser-local backup
+  draftSaving:    false,
+  composeOpen:    false,
+  composeHasContent: false, // compose retains unsent content while hidden
+  editingDraft:   null    // {msgno, folder} when editing an existing IMAP draft
 };
+
+var DRAFT_BACKUP_KEY = 'sem_draft_backup_' + (MY_EMAIL || 'user');
+var DRAFT_AUTOSAVE_MS = 25000;
+
+// User-facing text for the draft/sent features, resolved server-side through
+// the Language API so this page carries no hardcoded English for them.
+var SEMSTR = <?php echo json_encode([
+    'savedraft'          => get_string('savedraft', 'local_studentemail'),
+    'savingdraft'        => get_string('savingdraft', 'local_studentemail'),
+    'draftsaving'        => get_string('draft_saving', 'local_studentemail'),
+    'draftsavefailed'    => get_string('draft_savefailed', 'local_studentemail'),
+    'draftrestored'      => get_string('draft_restored', 'local_studentemail'),
+    'draftrestoredlocal' => get_string('draft_restoredlocal', 'local_studentemail'),
+    'draftediting'       => get_string('draft_editing', 'local_studentemail'),
+    'draftdiscard'       => get_string('draft_discardconfirm', 'local_studentemail'),
+    'draftunsaved'       => get_string('draft_unsaved', 'local_studentemail'),
+    'draftunsaveddetail' => get_string(
+        'draft_unsaveddetail',
+        'local_studentemail',
+        (object)['subject' => '{subject}', 'time' => '{time}']
+    ),
+    'draftsavedto'       => get_string(
+        'draft_savedto',
+        'local_studentemail',
+        (object)['folder' => '{folder}', 'time' => '{time}']
+    ),
+    'sentfiled'          => get_string('sent_filed', 'local_studentemail'),
+    'sentfiledto'        => get_string('sent_filedto', 'local_studentemail', '{folder}'),
+    'sentnotfiled'       => get_string('sent_notfiled', 'local_studentemail'),
+], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+
+/**
+ * Fill {placeholders} in a language string fetched into SEMSTR.
+ */
+function semStr(key, params) {
+  var out = SEMSTR[key] || '';
+  if (params) {
+    Object.keys(params).forEach(function (k) {
+      out = out.split('{' + k + '}').join(params[k]);
+    });
+  }
+  return out;
+}
 
 // ── AJAX helper (URL-encoded) ───────────────────────────────────────────
 function ajax(params, cb) {
@@ -1516,7 +1645,9 @@ function loadFolder(folder, el, resetPage) {
 
   document.getElementById('sem-folder-title').textContent = folderLabel(folder);
   document.getElementById('sem-detail-pane').style.display = 'none';
-  document.getElementById('sem-compose-pane').style.display = 'none';
+  // Switching folders must not lose a half-written message — closeCompose()
+  // files it in Drafts and keeps it in the pane.
+  if (state.composeOpen) { closeCompose(); }
 
   var offset = (state.page - 1) * PAGE_SIZE;
   showListLoading(true);
@@ -1664,6 +1795,13 @@ function openMessage(msgno) {
     if (!data.success) { document.getElementById('sem-detail-content').innerHTML = '<p style="color:#dc2626">' + esc(data.message) + '</p>'; return; }
     var msg = data.message;
     state.openMsg = msg;
+
+    // A message in the Drafts folder is not something to read — it is an
+    // unfinished message, so reopen it in the compose editor.
+    if (isDraftsFolder(state.folder) && CAN_SEND) {
+      editDraft(msg);
+      return;
+    }
 
     document.getElementById('sem-detail-header').innerHTML =
       '<div class="sem-detail-subject">' + esc(msg.subject) + '</div>' +
@@ -1873,30 +2011,287 @@ function composeBody(quote) {
 }
 
 function openCompose() {
+  // Never throw away unsent content: if the pane was closed with a draft still
+  // in it, reopen that draft instead of starting a blank message.
+  if (state.composeHasContent && composeHasSubstance()) {
+    showCompose();
+    setDraftStatus(SEMSTR.draftrestored);
+    document.getElementById('sem-compose-to').focus();
+    return;
+  }
   resetCompose();
+  newDraftId();
   document.getElementById('sem-compose-title').textContent = 'New Message';
   setEditorContent(composeBody(''));
-  document.getElementById('sem-compose-backdrop').style.display = 'block';
-  document.getElementById('sem-compose-pane').style.display = 'flex';
+  showCompose();
   document.getElementById('sem-compose-to').focus();
 }
 SEM.openCompose = openCompose;
 
+// ── Draft engine ───────────────────────────────────────────────────────
+/**
+ * Show the compose pane and start autosave + baseline tracking.
+ */
+function showCompose() {
+  document.getElementById('sem-compose-backdrop').style.display = 'block';
+  document.getElementById('sem-compose-pane').style.display = 'flex';
+  state.composeOpen = true;
+  startAutosave();
+}
+
+function newDraftId() {
+  state.draftId = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  state.editingDraft = null;
+  state.draftBaseline = composeSnapshot();
+  state.composeHasContent = false;
+  setDraftStatus('');
+  return state.draftId;
+}
+
+/** Serialised compose content — used to detect real changes. */
+function composeSnapshot() {
+  return JSON.stringify({
+    to:      document.getElementById('sem-compose-to').value.trim(),
+    cc:      document.getElementById('sem-compose-cc').value.trim(),
+    subject: document.getElementById('sem-compose-subject').value.trim(),
+    body:    getEditorContent()
+  });
+}
+
+/** True when the pane holds content that differs from the last saved state. */
+function composeIsDirty() {
+  return composeSnapshot() !== state.draftBaseline;
+}
+
+/** True when there is something worth keeping (not just an empty shell). */
+function composeHasSubstance() {
+  var snap = JSON.parse(composeSnapshot());
+  if (snap.to || snap.cc || snap.subject) return true;
+  // Strip the auto-inserted signature/quote wrapper before judging the body.
+  var tmp = document.createElement('div');
+  tmp.innerHTML = snap.body || '';
+  var sigs = tmp.querySelectorAll('[contenteditable="false"]');
+  for (var i = 0; i < sigs.length; i++) { sigs[i].parentNode.removeChild(sigs[i]); }
+  return tmp.textContent.replace(/\s| /g, '') !== '';
+}
+
+function setDraftStatus(text, isError) {
+  var el = document.getElementById('sem-draft-status');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.color = isError ? '#dc2626' : '#6b7280';
+}
+
+function startAutosave() {
+  stopAutosave();
+  state.draftTimer = setInterval(function () {
+    if (state.composeOpen && composeIsDirty() && composeHasSubstance()) {
+      saveDraft(true);
+    }
+  }, DRAFT_AUTOSAVE_MS);
+}
+
+function stopAutosave() {
+  if (state.draftTimer) { clearInterval(state.draftTimer); state.draftTimer = null; }
+}
+
+/**
+ * Save the compose contents to the mailbox's IMAP Drafts folder on the mail
+ * server, so the draft shows up in Drafts here, in cPanel/Roundcube webmail
+ * and in any other mail client.
+ *
+ * @param {boolean} silent  true for autosave / close (no button state change)
+ * @param {function} done   optional callback(success)
+ */
+function saveDraft(silent, done) {
+  if (state.draftSaving) { if (done) done(false); return; }
+  if (!composeHasSubstance()) {
+    setDraftStatus('');
+    if (done) done(false);
+    return;
+  }
+  if (!state.draftId) { newDraftId(); }
+
+  var snap = JSON.parse(composeSnapshot());
+  var btn  = document.querySelector('.sem-savedraft-btn');
+  state.draftSaving = true;
+  if (!silent && btn) {
+    btn.disabled = true;
+    document.getElementById('sem-savedraft-label').textContent = SEMSTR.savingdraft;
+  }
+  setDraftStatus(SEMSTR.draftsaving);
+
+  var wasEditing = state.editingDraft;
+
+  ajax({
+    action:  'save_draft',
+    draftid: state.draftId,
+    to:      snap.to,
+    cc:      snap.cc,
+    subject: snap.subject,
+    body:    snap.body
+  }, function (data) {
+    state.draftSaving = false;
+    if (!silent && btn) {
+      btn.disabled = false;
+      document.getElementById('sem-savedraft-label').textContent = SEMSTR.savedraft;
+    }
+    if (!data.success) {
+      semDebug('Draft save FAILED', data.message);
+      setDraftStatus(data.message || SEMSTR.draftsavefailed, true);
+      // A silent save (autosave, or closing the pane) hides the compose pane,
+      // so the status line above would never be seen. Keep the browser backup
+      // and surface the recovery bar instead, so the draft is never lost
+      // without the student being told.
+      saveLocalBackup();
+      if (silent) {
+        var bar = document.getElementById('sem-draft-recover');
+        if (bar) {
+          document.getElementById('sem-draft-recover-text').textContent =
+            data.message || SEMSTR.draftsavefailed;
+          bar.style.display = 'flex';
+        }
+      }
+      if (done) done(false);
+      return;
+    }
+    // Saved copy is now authoritative — clear the browser-local backup.
+    state.draftBaseline = composeSnapshot();
+    state.composeHasContent = true;
+    clearLocalBackup();
+    setDraftStatus(semStr('draftsavedto', { folder: data.folder || '', time: data.saved_at || '' }));
+    if (data.append_log) { semDebug('Drafts-folder append log', '\n' + data.append_log); }
+
+    // If this draft came from an existing message in the Drafts folder, remove
+    // that older copy now that the new revision is filed.
+    if (wasEditing && wasEditing.msgno) {
+      state.editingDraft = null;
+      ajax({ action: 'delete_message', msgno: wasEditing.msgno, folder: wasEditing.folder }, function () {});
+    }
+    // Only refresh the list when compose is closed — refreshing mid-edit
+    // would hide the pane the student is typing in.
+    if (isDraftsFolder(state.folder) && !state.composeOpen) { refreshFolder(); }
+    if (done) done(true);
+  });
+}
+
+function saveDraftNow() {
+  saveDraft(false);
+}
+SEM.saveDraftNow = saveDraftNow;
+
+/** Is this folder name the server's Drafts folder? */
+function isDraftsFolder(name) {
+  return String(name || '').replace(/^INBOX[./]/i, '').toLowerCase().indexOf('draft') >= 0;
+}
+function isSentFolder(name) {
+  return String(name || '').replace(/^INBOX[./]/i, '').toLowerCase().indexOf('sent') >= 0;
+}
+
+// ── Browser-local backup (survives an accidental tab close / crash) ─────
+function saveLocalBackup() {
+  try {
+    if (!composeHasSubstance()) { clearLocalBackup(); return; }
+    var snap = JSON.parse(composeSnapshot());
+    snap.draftId = state.draftId;
+    snap.at      = new Date().toISOString();
+    window.localStorage.setItem(DRAFT_BACKUP_KEY, JSON.stringify(snap));
+  } catch (e) { /* storage unavailable — server draft is the real safety net */ }
+}
+
+function clearLocalBackup() {
+  try { window.localStorage.removeItem(DRAFT_BACKUP_KEY); } catch (e) {}
+}
+
+function readLocalBackup() {
+  try {
+    var raw = window.localStorage.getItem(DRAFT_BACKUP_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+function offerLocalDraft() {
+  var b = readLocalBackup();
+  if (!b) return;
+  var bar = document.getElementById('sem-draft-recover');
+  if (!bar) return;
+  var when = '';
+  try { when = new Date(b.at).toLocaleString(); } catch (e) {}
+  document.getElementById('sem-draft-recover-text').textContent = (b.subject || when)
+    ? semStr('draftunsaveddetail', { subject: b.subject || '', time: when })
+    : SEMSTR.draftunsaved;
+  bar.style.display = 'flex';
+}
+
+function restoreLocalDraft() {
+  var b = readLocalBackup();
+  document.getElementById('sem-draft-recover').style.display = 'none';
+  if (!b) return;
+  resetCompose();
+  state.draftId = b.draftId || null;
+  if (!state.draftId) { newDraftId(); }
+  state.editingDraft = null;
+  document.getElementById('sem-compose-title').textContent = 'Draft';
+  document.getElementById('sem-compose-to').value      = b.to || '';
+  document.getElementById('sem-compose-cc').value      = b.cc || '';
+  document.getElementById('sem-compose-subject').value = b.subject || '';
+  setEditorContent(b.body || composeBody(''));
+  state.draftBaseline = '';          // force it to count as unsaved
+  state.composeHasContent = true;
+  showCompose();
+  setDraftStatus(SEMSTR.draftrestoredlocal);
+}
+SEM.restoreLocalDraft = restoreLocalDraft;
+
+function dismissLocalDraft() {
+  clearLocalBackup();
+  document.getElementById('sem-draft-recover').style.display = 'none';
+}
+SEM.dismissLocalDraft = dismissLocalDraft;
+
+/** Load an existing message from the Drafts folder back into compose. */
+function editDraft(msg) {
+  resetCompose();
+  newDraftId();
+  state.editingDraft = { msgno: msg.msgno, folder: state.folder };
+  document.getElementById('sem-compose-title').textContent = 'Draft';
+  document.getElementById('sem-compose-to').value      = stripAddrNames(msg.to || '');
+  document.getElementById('sem-compose-cc').value      = stripAddrNames(msg.cc || '');
+  document.getElementById('sem-compose-subject').value = msg.subject === '(no subject)' ? '' : (msg.subject || '');
+  setEditorContent(msg.body_html || ('<p>' + esc(msg.body_plain || '') + '</p>'));
+  state.draftBaseline = composeSnapshot();
+  state.composeHasContent = true;
+  document.getElementById('sem-detail-pane').style.display = 'none';
+  showCompose();
+  setDraftStatus(SEMSTR.draftediting);
+}
+
+/** "Name <a@b.c>, Other <d@e.f>" → "a@b.c, d@e.f" */
+function stripAddrNames(list) {
+  return String(list || '').split(',').map(function (a) {
+    var m = a.match(/<([^>]+)>/);
+    return (m ? m[1] : a).trim();
+  }).filter(function (a) { return a !== ''; }).join(', ');
+}
+
 function openReply() {
   if (!state.openMsg) return;
+  stashUnsentDraft();
   resetCompose();
+  newDraftId();
   document.getElementById('sem-compose-title').textContent = 'Reply';
   document.getElementById('sem-compose-to').value    = state.openMsg.from_email;
   document.getElementById('sem-compose-subject').value = prefixSubject('Re', state.openMsg.subject);
   setEditorContent(composeBody(quoteHtml(state.openMsg)));
-  document.getElementById('sem-compose-backdrop').style.display = 'block';
-  document.getElementById('sem-compose-pane').style.display = 'flex';
+  showCompose();
 }
 SEM.openReply = openReply;
 
 function openReplyAll() {
   if (!state.openMsg) return;
+  stashUnsentDraft();
   resetCompose();
+  newDraftId();
   document.getElementById('sem-compose-title').textContent = 'Reply All';
 
   var addrs = [];
@@ -1911,28 +2306,85 @@ function openReplyAll() {
   document.getElementById('sem-compose-to').value      = addrs.join(', ');
   document.getElementById('sem-compose-subject').value  = prefixSubject('Re', state.openMsg.subject);
   setEditorContent(composeBody(quoteHtml(state.openMsg)));
-  document.getElementById('sem-compose-backdrop').style.display = 'block';
-  document.getElementById('sem-compose-pane').style.display = 'flex';
+  showCompose();
 }
 SEM.openReplyAll = openReplyAll;
 
 function openForward() {
   if (!state.openMsg) return;
+  stashUnsentDraft();
   resetCompose();
+  newDraftId();
   document.getElementById('sem-compose-title').textContent = 'Forward';
   document.getElementById('sem-compose-subject').value = prefixSubject('Fwd', state.openMsg.subject);
   setEditorContent(composeBody(quoteHtml(state.openMsg)));
-  document.getElementById('sem-compose-backdrop').style.display = 'block';
-  document.getElementById('sem-compose-pane').style.display = 'flex';
+  showCompose();
   document.getElementById('sem-compose-to').focus();
 }
 SEM.openForward = openForward;
 
+/**
+ * Close the compose pane WITHOUT losing anything.
+ *
+ * Clicking the backdrop, the X, or switching folders no longer discards the
+ * message: the content is saved to the server Drafts folder and also kept in
+ * the pane, so reopening Compose brings it straight back.
+ */
 function closeCompose() {
-  document.getElementById('sem-compose-pane').style.display = 'none';
-  document.getElementById('sem-compose-backdrop').style.display = 'none';
+  hideCompose();
+  if (composeHasSubstance()) {
+    state.composeHasContent = true;
+    saveLocalBackup();
+    if (composeIsDirty()) { saveDraft(true); }
+  } else {
+    state.composeHasContent = false;
+  }
 }
 SEM.closeCompose = closeCompose;
+
+/** Hide the pane only — no state changes. */
+function hideCompose() {
+  document.getElementById('sem-compose-pane').style.display = 'none';
+  document.getElementById('sem-compose-backdrop').style.display = 'none';
+  state.composeOpen = false;
+  stopAutosave();
+}
+
+/**
+ * Save any unsent content before compose is reused for a reply/forward, so a
+ * half-written message is never overwritten.
+ */
+function stashUnsentDraft() {
+  if (state.composeHasContent && composeIsDirty() && composeHasSubstance()) {
+    saveLocalBackup();
+    saveDraft(true);
+  }
+}
+
+/** Explicit "Discard" — throws the draft away everywhere, with confirmation. */
+function discardCompose() {
+  if (composeHasSubstance() &&
+      !window.confirm(SEMSTR.draftdiscard)) {
+    return;
+  }
+  var id  = state.draftId;
+  var old = state.editingDraft;
+  hideCompose();
+  resetCompose();
+  setEditorContent('');
+  state.composeHasContent = false;
+  state.editingDraft = null;
+  state.draftBaseline = composeSnapshot();
+  clearLocalBackup();
+  setDraftStatus('');
+  if (id) { ajax({ action: 'delete_draft', draftid: id }, function () {}); }
+  if (old && old.msgno) {
+    ajax({ action: 'delete_message', msgno: old.msgno, folder: old.folder }, function () {
+      if (isDraftsFolder(state.folder)) { refreshFolder(); }
+    });
+  }
+}
+SEM.discardCompose = discardCompose;
 
 function resetCompose() {
   document.getElementById('sem-compose-to').value      = '';
@@ -2072,7 +2524,38 @@ function sendMessage() {
       semDebug('Send SUCCESS');
       status.textContent = 'Sent!';
       status.style.color = '#16a34a';
-      setTimeout(function () { closeCompose(); }, 1400);
+      // The message is out and the server files a copy in the mailbox's Sent
+      // folder, so the draft it came from is no longer needed.
+      var oldDraft = state.editingDraft;
+      state.editingDraft = null;
+      state.draftId = null;
+      state.composeHasContent = false;
+      clearLocalBackup();
+      // Report whether the server managed to file the copy in Sent, rather
+      // than assuming it did.
+      if (data.sent_filed) {
+        setDraftStatus(data.sent_folder
+          ? semStr('sentfiledto', { folder: data.sent_folder })
+          : SEMSTR.sentfiled);
+      } else {
+        setDraftStatus(SEMSTR.sentnotfiled, true);
+      }
+      if (data.append_log) { semDebug('Sent-folder append log', '\n' + data.append_log); }
+      if (oldDraft && oldDraft.msgno) {
+        ajax({ action: 'delete_message', msgno: oldDraft.msgno, folder: oldDraft.folder }, function () {});
+      }
+      setTimeout(function () {
+        hideCompose();
+        resetCompose();
+        setEditorContent('');
+        state.draftBaseline = composeSnapshot();
+        setDraftStatus('');
+        // Give the server a moment to file the IMAP copy, then refresh if the
+        // student is looking at Sent or Drafts.
+        if (isSentFolder(state.folder) || isDraftsFolder(state.folder)) {
+          setTimeout(refreshFolder, 1200);
+        }
+      }, 1400);
     } else {
       semDebug('Send FAILED', { message: data.message, debug: data.debug || null });
       status.textContent = data.message || 'Send failed.';
@@ -2090,6 +2573,7 @@ function sendMessage() {
     fd.append('cc', cc);
     fd.append('subject', subject);
     fd.append('body', body);
+    if (state.draftId) { fd.append('draftid', state.draftId); }
     for (var i = 0; i < fileInput.files.length; i++) {
       fd.append('attachments[]', fileInput.files[i]);
     }
@@ -2098,7 +2582,8 @@ function sendMessage() {
     // No attachments — use standard URL-encoded POST (same as all other
     // actions). This avoids WAF rules that block multipart/form-data.
     semDebug('Using URL-encoded path (no attachments)');
-    ajax({ action: 'send_message', to: to, cc: cc, subject: subject, body: body }, handleResponse);
+    ajax({ action: 'send_message', to: to, cc: cc, subject: subject, body: body,
+           draftid: state.draftId || '' }, handleResponse);
   }
 }
 SEM.sendMessage = sendMessage;
@@ -2289,10 +2774,36 @@ refreshBadge();
 // The message list itself only reloads on explicit user action (folder click / refresh button).
 setInterval(refreshBadge, 600000);
 
-// Keep compose editor placeholder in sync as the user types.
+// Keep compose editor placeholder in sync as the user types, and keep a
+// browser-local backup of the draft between server autosaves.
 document.getElementById('sem-compose-editor').addEventListener('input', function () {
   syncEditorEmpty(this);
+  scheduleLocalBackup();
 });
+
+['sem-compose-to', 'sem-compose-cc', 'sem-compose-subject'].forEach(function (id) {
+  var el = document.getElementById(id);
+  if (el) { el.addEventListener('input', scheduleLocalBackup); }
+});
+
+function scheduleLocalBackup() {
+  if (state.draftBackupT) { clearTimeout(state.draftBackupT); }
+  state.draftBackupT = setTimeout(saveLocalBackup, 700);
+}
+
+// Last line of defence: warn before leaving the page with an unfiled draft,
+// and take one more local backup on the way out.
+window.addEventListener('beforeunload', function (e) {
+  if (composeHasSubstance() && composeIsDirty()) {
+    saveLocalBackup();
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+});
+
+// Offer to recover anything left over from a previous visit.
+offerLocalDraft();
 
 })();
 </script>

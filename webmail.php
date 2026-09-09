@@ -46,7 +46,12 @@ use local_studentemail\email_manager;
 
 require_login();
 
-$PAGE->set_context(context_system::instance());
+$systemcontext = context_system::instance();
+// Students need the "view own student email" capability, which the plugin
+// grants to the authenticated user and student archetypes by default.
+require_capability('local/studentemail:viewown', $systemcontext);
+
+$PAGE->set_context($systemcontext);
 $PAGE->set_url(new moodle_url('/local/studentemail/webmail.php'));
 $PAGE->set_title(get_string('webmail_title', 'local_studentemail'));
 $PAGE->set_heading(get_string('webmail_title', 'local_studentemail'));

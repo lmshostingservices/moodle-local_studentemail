@@ -204,6 +204,7 @@ $string['error_noimap']             = 'The PHP imap extension is not installed o
 $string['error_imap_connect']       = 'Could not connect to the mail server: {$a}';
 $string['error_message_notfound']   = 'Message not found or could not be read.';
 $string['error_nosmtp']             = 'SMTP (outgoing mail) is not configured. Please ask your administrator to set up SMTP settings for this plugin.';
+$string['error_lock']                = 'Could not acquire the email numbering lock. Please try again in a moment.';
 $string['error_smtp_send']          = 'Failed to send message: {$a}';
 
 // Webmail portal
@@ -216,4 +217,51 @@ $string['webmail_redirecting']      = 'Opening your email inbox...';
 $string['webmail_open_manually']    = 'Click here if you are not redirected automatically';
 $string['webmail_youraddress']      = 'Your email address: {$a}';
 
-$string['privacy:metadata'] = 'The local_studentemail plugin does not store any personal data.';
+// Privacy API.
+$string['privacy:metadata:accounts'] = 'Details of the cPanel mailbox provisioned for each student.';
+$string['privacy:metadata:accounts:userid'] = 'The ID of the Moodle user the mailbox belongs to.';
+$string['privacy:metadata:accounts:email'] = 'The full email address provisioned for the user.';
+$string['privacy:metadata:accounts:emailpassword'] = 'The encrypted mailbox password used to sign the user in to their mailbox.';
+$string['privacy:metadata:accounts:studentnumber'] = 'The sequential student number assigned when the autonumber address format is used.';
+$string['privacy:metadata:accounts:status'] = 'The status of the mailbox, such as active, suspended, archived, pending or error.';
+$string['privacy:metadata:accounts:quotamb'] = 'The mailbox storage quota in megabytes.';
+$string['privacy:metadata:accounts:notes'] = 'Administrator notes and error messages recorded against the mailbox.';
+$string['privacy:metadata:accounts:timecreated'] = 'The time the mailbox record was created.';
+$string['privacy:metadata:accounts:timemodified'] = 'The time the mailbox record was last modified.';
+$string['privacy:metadata:preference:signature'] = 'The email signature the user has saved for outgoing messages.';
+$string['privacy:metadata:cpanel'] = 'Mailbox data exchanged with the external cPanel mail server that hosts the student mailboxes. Messages, drafts and sent copies are stored on that server and are not controlled by Moodle.';
+$string['privacy:metadata:cpanel:fullname'] = 'The full name of the user, sent as the display name of the mailbox and of outgoing messages.';
+$string['privacy:metadata:cpanel:email'] = 'The email address of the mailbox created or accessed on the mail server.';
+$string['privacy:metadata:cpanel:emailpassword'] = 'The mailbox password, sent to create the account and to authenticate IMAP and SMTP sessions.';
+$string['privacy:metadata:cpanel:quota'] = 'The mailbox storage quota requested for the account.';
+$string['privacy:metadata:cpanel:messages'] = 'The content of messages the user reads, sends, or saves as drafts, including recipients, subjects, bodies and attachments.';
+$string['privacy:path:account'] = 'Student email account';
+$string['privacy:export:passwordwithheld'] = 'Withheld: mailbox credential not exported.';
+
+// Compose, drafts and sent copies.
+$string['savedraft'] = 'Save draft';
+$string['savingdraft'] = 'Saving...';
+$string['discard'] = 'Discard';
+$string['restore'] = 'Restore';
+$string['draft_saving'] = 'Saving draft...';
+$string['draft_saved'] = 'Draft saved.';
+$string['draft_savedto'] = 'Draft saved to {$a->folder} at {$a->time}';
+$string['draft_savefailed'] = 'The draft could not be saved on the mail server. A copy is kept in this browser.';
+$string['draft_restored'] = 'Restored your unsaved draft.';
+$string['draft_restoredlocal'] = 'Draft restored from this browser. Save it to keep it on the mail server.';
+$string['draft_editing'] = 'Editing draft. Changes are saved back to the Drafts folder.';
+$string['draft_discardconfirm'] = 'Discard this message? Any saved draft will be deleted.';
+$string['draft_unsaved'] = 'You have an unsaved draft.';
+$string['draft_unsaveddetail'] = 'Unsaved draft "{$a->subject}" from {$a->time}.';
+$string['draft_nodraftsfolder'] = 'The Drafts folder is not available on the mail server.';
+$string['draft_notsaved'] = 'The draft could not be saved on the mail server: {$a}';
+$string['sent_filed'] = 'A copy has been filed in your Sent folder.';
+$string['messagesent'] = 'Message sent.';
+$string['success_linked_existing'] = 'Linked to the existing mailbox {$a} instead of creating a second one.';
+$string['success_unlinked'] = 'Unlinked from {$a}. The mailbox and its mail are untouched on the server.';
+$string['error_notlinked'] = 'This student is not linked to a mailbox.';
+$string['error_mailboxclaimed'] = 'The mailbox {$a->email} is already linked to {$a->name}. Unlink it from that student first.';
+$string['prefer_existing_mailbox'] = 'Use an existing mailbox when one is found';
+$string['prefer_existing_mailbox_desc'] = 'Before creating a mailbox for a student, check whether one already exists for them on the mail server and link that instead. Matching is on exact address only, and a mailbox already linked to another student is never used. Turn this off to always create a new address, which can leave a student with two mailboxes: one that Moodle sends to, and another that the built-in mailbox opens.';
+$string['sent_notfiled'] = 'Message sent, but the copy could not be saved to your Sent folder. Please tell your administrator.';
+$string['sent_filedto'] = 'A copy has been filed in {$a}.';

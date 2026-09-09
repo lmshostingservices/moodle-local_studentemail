@@ -103,6 +103,13 @@ if ($hasaccess) {
         PARAM_HOST
     ));
 
+    $settings->add(new admin_setting_configcheckbox(
+        'local_studentemail/prefer_existing_mailbox',
+        get_string('prefer_existing_mailbox', 'local_studentemail'),
+        get_string('prefer_existing_mailbox_desc', 'local_studentemail'),
+        1
+    ));
+
     $settings->add(new admin_setting_configselect(
         'local_studentemail/email_format',
         get_string('email_format', 'local_studentemail'),

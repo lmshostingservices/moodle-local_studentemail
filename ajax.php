@@ -107,6 +107,14 @@ try {
             break;
 
         // -----------------------------------------------------------
+        // Remove the plugin's link to a mailbox without touching the mailbox
+        // itself, so a student linked to the wrong address can be repointed.
+        case 'unlink_account':
+            $userid = required_param('userid', PARAM_INT);
+            echo json_encode($manager->unlink_account($userid));
+            break;
+
+        // -----------------------------------------------------------
         case 'create_missing':
             echo json_encode($manager->create_missing());
             break;
@@ -387,7 +395,69 @@ try {
                     return !in_array($e, $linked, true);
                 }));
             }
-            echo json_encode(['success' => true, 'accounts' => $cpanel_emails]);
+            // When a student is named, return a richer option list so the
+            // administrator can choose between the mailbox already linked to
+            // them and the one matching their Moodle identity. Mailboxes
+            // belonging to other students are still excluded.
+            $foruserid = optional_param('userid', 0, PARAM_INT);
+            $options   = [];
+            if ($foruserid > 0) {
+                $current = '';
+                $currentrow = $DB->get_record(
+                    'local_studentemail_accounts',
+                    ['userid' => $foruserid],
+                    'email'
+                );
+                if ($currentrow && !empty($currentrow->email)) {
+                    $current = strtolower(trim($currentrow->email));
+                }
+
+                $moodleuser = $DB->get_record('user', ['id' => $foruserid]);
+                $profile    = $moodleuser ? strtolower(trim($moodleuser->email)) : '';
+
+                // Every mailbox claimed by a different student.
+                $claimed = [];
+                $claimrows = $DB->get_records('local_studentemail_accounts', null, '', 'userid, email');
+                foreach ($claimrows as $claimrow) {
+                    if (!empty($claimrow->email) && (int)$claimrow->userid !== $foruserid) {
+                        $claimed[strtolower($claimrow->email)] = true;
+                    }
+                }
+
+                $choices = $cpanel_emails;
+                if ($current !== '' && !in_array($current, $choices, true)) {
+                    $choices[] = $current;
+                }
+                sort($choices);
+
+                foreach ($choices as $choice) {
+                    if (isset($claimed[$choice])) {
+                        continue;
+                    }
+                    $options[] = [
+                        'email'       => $choice,
+                        'current'     => ($choice === $current),
+                        'recommended' => ($profile !== '' && $choice === $profile),
+                    ];
+                }
+
+                // Recommended first, then the one currently linked.
+                usort($options, function ($x, $y) {
+                    if ($x['recommended'] !== $y['recommended']) {
+                        return $x['recommended'] ? -1 : 1;
+                    }
+                    if ($x['current'] !== $y['current']) {
+                        return $x['current'] ? -1 : 1;
+                    }
+                    return strcmp($x['email'], $y['email']);
+                });
+            }
+
+            echo json_encode([
+                'success'  => true,
+                'accounts' => $cpanel_emails,
+                'options'  => $options,
+            ]);
             break;
 
         // -----------------------------------------------------------
@@ -586,16 +656,23 @@ try {
 
             if ($action === 'test_imap_student') {
                 $test_userid  = required_param('userid', PARAM_INT);
-                $imap_account = $DB->get_record('local_studentemail_accounts',
-                    ['userid' => $test_userid], 'id, userid, email, emailpassword, status');
+                $imap_account = $DB->get_record(
+                    'local_studentemail_accounts',
+                    ['userid' => $test_userid],
+                    'id, userid, email, emailpassword, status'
+                );
                 if (!$imap_account) {
                     echo json_encode(['success' => false, 'message' => 'No email account record found for this student.']);
                     break;
                 }
             } else {
-                $imap_account = $DB->get_record_select('local_studentemail_accounts',
+                $imap_account = $DB->get_record_select(
+                    'local_studentemail_accounts',
                     "status = 'active' AND emailpassword IS NOT NULL AND emailpassword != ''",
-                    [], 'id, userid, email, emailpassword, status', IGNORE_MULTIPLE);
+                    [],
+                    'id, userid, email, emailpassword, status',
+                    IGNORE_MULTIPLE
+                );
                 if (!$imap_account) {
                     echo json_encode(['success' => false, 'message' => 'No active accounts with stored passwords. Reset PW on at least one student first.']);
                     break;
@@ -613,7 +690,7 @@ try {
             // Helper: open IMAP with a given username, list all folders + counts.
             $probe = function (string $username) use ($server_prefix, $imap_pass): array {
                 $spec   = $server_prefix . 'INBOX';
-                imap_errors(); // clear prior error stack
+                imap_errors(); // Clear prior error stack.
                 $stream = @imap_open($spec, $username, $imap_pass, 0, 2, ['DISABLE_AUTHENTICATOR' => 'GSSAPI']);
 
                 if (!$stream) {

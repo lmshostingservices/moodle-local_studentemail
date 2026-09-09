@@ -33,6 +33,14 @@ class imap_client {
     private $stream = false;
     /** @var string Accumulated PHPMailer SMTP debug output for the last send_message() call */
     private string $smtp_debug_log = '';
+    /** @var string Raw MIME source of the last successfully sent message (for the Sent append) */
+    private string $last_sent_mime = '';
+    /** @var string Diagnostic notes from the last Sent/Drafts IMAP append */
+    private string $append_log = '';
+    /** @var array Resolved special-folder names, keyed by type ('sent'|'drafts') */
+    private array $special_folder_cache = [];
+    /** @var string Folder the last Sent/Drafts append targeted */
+    private string $last_append_folder = '';
 
     // -------------------------------------------------------------------------
     // Construction
@@ -71,8 +79,12 @@ class imap_client {
 
         $flags = '/' . $type;
         switch ($encryption) {
-            case 'ssl': $flags .= '/ssl'; break;
-            case 'tls': $flags .= '/tls'; break;
+            case 'ssl':
+                $flags .= '/ssl';
+                break;
+            case 'tls':
+                $flags .= '/tls';
+                break;
         }
         if ($novalidate) {
             $flags .= '/novalidate-cert';
@@ -81,7 +93,23 @@ class imap_client {
         // For IMAP login most cPanel servers want the bare username (strip @domain).
         $this->username = $strip ? preg_replace('/@.+$/', '', $this->username) : $this->username;
 
+        // Defensive: a folder name that already carries a {...} specification
+        // (as imap_list() returns) must never be specified a second time.
+        $folder = $this->strip_mailbox_spec($folder);
+
         return '{' . $host . ':' . $port . $flags . '}' . $folder;
+    }
+
+    /**
+     * Remove a leading IMAP mailbox specification from a folder name.
+     *
+     * '{mail.host:993/imap/ssl}INBOX.Sent' becomes 'INBOX.Sent'.
+     *
+     * @param  string $folder
+     * @return string
+     */
+    private function strip_mailbox_spec(string $folder): string {
+        return trim(preg_replace('/^\{[^}]*\}/', '', trim($folder)));
     }
 
     // -------------------------------------------------------------------------
@@ -100,9 +128,24 @@ class imap_client {
 
         $spec = $this->build_mailbox_spec($folder);
 
-        // imap_open with 2 retries, 15s timeout.
-        $stream = @imap_open($spec, $this->username, $this->password, 0, 2,
-            ['DISABLE_AUTHENTICATOR' => 'GSSAPI']);
+        // Bound every IMAP wait so a slow or unreachable mail server can never
+        // hold a PHP worker until max_execution_time kills it mid-response.
+        if (function_exists('imap_timeout')) {
+            @imap_timeout(IMAP_OPENTIMEOUT, 15);
+            @imap_timeout(IMAP_READTIMEOUT, 15);
+            @imap_timeout(IMAP_WRITETIMEOUT, 15);
+            @imap_timeout(IMAP_CLOSETIMEOUT, 15);
+        }
+
+        // Open with 2 retries and the 15-second timeouts set above.
+        $stream = @imap_open(
+            $spec,
+            $this->username,
+            $this->password,
+            0,
+            2,
+            ['DISABLE_AUTHENTICATOR' => 'GSSAPI']
+        );
 
         if (!$stream) {
             $err = imap_last_error() ?: 'IMAP connection failed';
@@ -138,12 +181,20 @@ class imap_client {
 
         $folders = [];
         foreach ($raw as $f) {
-            $name = str_replace($server, '', $f);
+            // The imap_list() call returns the full mailbox spec, e.g.
+            // {mail.host:993/imap/ssl}INBOX.Sent — and the flags it carries do
+            // not always match $server. Strip whatever specification prefix is
+            // present so only the folder name remains; a stale prefix would be
+            // fed straight back into build_mailbox_spec() and produce a
+            // double-specified mailbox that no IMAP command can address.
+            $name = $this->strip_mailbox_spec(str_replace($server, '', $f));
             // Decode modified UTF-7.
             if (function_exists('mb_convert_encoding')) {
                 $name = mb_convert_encoding($name, 'UTF-8', 'UTF7-IMAP');
             }
-            $folders[] = $name;
+            if ($name !== '') {
+                $folders[] = $name;
+            }
         }
 
         // Sort: INBOX first, then alphabetical.
@@ -625,14 +676,366 @@ class imap_client {
             );
         }
 
-        // NOTE: Sent-folder IMAP append is intentionally disabled.
-        // append_to_sent() always opens a fresh imap_open() connection regardless
-        // of whether $this->stream is set, and that connection can hang for 60 s+
-        // when the Sent folder does not exist or the server throttles connections.
-        // The hang exceeds max_execution_time and returns an empty body to the browser,
-        // which the JS reports as "Server error. Please try again."
-        // Once the root cause is confirmed via checkpoint logs, a non-blocking
-        // append approach can be re-evaluated.
+        // Capture the exact MIME source that went out over SMTP so the caller can
+        // append it to the cPanel mailbox's Sent folder AFTER the HTTP response has
+        // been flushed (see append_sent_copy()). Capturing is cheap and cannot hang;
+        // only the IMAP append itself is deferred.
+        $this->last_sent_mime = '';
+        if (method_exists($mail, 'getSentMIMEMessage')) {
+            try {
+                $this->last_sent_mime = (string)$mail->getSentMIMEMessage();
+                $dbg('STEP 9 - captured sent MIME (' . strlen($this->last_sent_mime) . ' bytes) for Sent-folder append');
+            } catch (\Throwable $e) {
+                $dbg('STEP 9 - could not capture sent MIME: ' . $e->getMessage());
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Sent / Drafts folder support (real cPanel IMAP folders)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Diagnostic notes from the last Sent/Drafts append attempt.
+     */
+    public function get_append_log(): string {
+        return $this->append_log;
+    }
+
+    /**
+     * The folder the last Sent/Drafts append targeted.
+     *
+     * @return string
+     */
+    public function get_last_append_folder(): string {
+        return $this->last_append_folder;
+    }
+
+    /**
+     * True when send_message() captured a MIME source that can be filed in Sent.
+     */
+    public function has_sent_copy(): bool {
+        return $this->last_sent_mime !== '';
+    }
+
+    /**
+     * Append the last sent message to the mailbox's Sent folder.
+     *
+     * MUST be called after the JSON response has been flushed to the browser —
+     * the student's send must never fail because the IMAP append was slow.
+     *
+     * @return bool true when the copy was filed.
+     */
+    public function append_sent_copy(): bool {
+        if ($this->last_sent_mime === '') {
+            $this->append_log .= "no captured MIME — nothing to file in Sent\n";
+            return false;
+        }
+        $folder = $this->find_special_folder('sent');
+        if ($folder === '') {
+            $this->append_log .= "no Sent folder available\n";
+            return false;
+        }
+        $this->last_append_folder = $folder;
+        return $this->append_raw($folder, $this->last_sent_mime, "\\Seen");
+    }
+
+    /**
+     * Save a draft into the mailbox's Drafts folder.
+     *
+     * Any earlier revision of the same draft (matched on the X-SEM-Draft-Id
+     * header) is removed first, so the folder holds one entry per draft rather
+     * than one per autosave tick.
+     *
+     * @return array ['folder' => string, 'replaced' => int]
+     */
+    public function save_draft(
+        string $from_email,
+        string $from_name,
+        string $to,
+        string $subject,
+        string $body_html,
+        string $cc = '',
+        string $draftid = ''
+    ): array {
+        $folder = $this->find_special_folder('drafts');
+        if ($folder === '') {
+            throw new \moodle_exception('draft_nodraftsfolder', 'local_studentemail');
+        }
+
+        $replaced = 0;
+        if ($draftid !== '') {
+            $replaced = $this->delete_drafts_by_id($draftid, $folder);
+        }
+
+        $raw = $this->build_draft_mime($from_email, $from_name, $to, $subject, $body_html, $cc, $draftid);
+        $this->last_append_folder = $folder;
+        $ok  = $this->append_raw($folder, $raw, "\\Draft \\Seen");
+        if (!$ok) {
+            throw new \moodle_exception('draft_notsaved', 'local_studentemail', '',
+                $this->append_log !== '' ? $this->append_log : imap_last_error());
+        }
+        return ['folder' => $folder, 'replaced' => $replaced];
+    }
+
+    /**
+     * Delete every message in Drafts carrying the given X-SEM-Draft-Id.
+     *
+     * @return int number of drafts removed
+     */
+    public function delete_drafts_by_id(string $draftid, string $folder = ''): int {
+        if ($draftid === '') {
+            return 0;
+        }
+        if ($folder === '') {
+            $folder = $this->find_special_folder('drafts', false);
+        }
+        if ($folder === '') {
+            return 0;
+        }
+        try {
+            $this->connect($folder);
+        } catch (\Throwable $e) {
+            $this->append_log .= 'could not open ' . $folder . ' to clear old drafts: ' . $e->getMessage() . "\n";
+            return 0;
+        }
+        // Draft ids are generated by this plugin (hex only) — safe inside the search string.
+        $safe = preg_replace('/[^A-Za-z0-9._-]/', '', $draftid);
+        $hits = @imap_search($this->stream, 'HEADER X-SEM-Draft-Id "' . $safe . '"');
+        if (!$hits) {
+            return 0;
+        }
+        foreach ($hits as $msgno) {
+            @imap_delete($this->stream, (string)$msgno);
+        }
+        @imap_expunge($this->stream);
+        return count($hits);
+    }
+
+    /**
+     * Resolve the server's Sent or Drafts folder, creating it when missing.
+     *
+     * cPanel/Dovecot servers name these Sent/Drafts or INBOX.Sent/INBOX.Drafts
+     * depending on the namespace separator, so the name is discovered rather
+     * than assumed.
+     *
+     * @param  string $type   'sent' or 'drafts'
+     * @param  bool   $create create the folder when the server has none
+     * @return string folder name, or '' when unavailable
+     */
+    public function find_special_folder(string $type, bool $create = true): string {
+        $type = ($type === 'drafts') ? 'drafts' : 'sent';
+        if (isset($this->special_folder_cache[$type])) {
+            return $this->special_folder_cache[$type];
+        }
+
+        $needle     = ($type === 'drafts') ? 'draft' : 'sent';
+        $candidates = ($type === 'drafts')
+            ? ['Drafts', 'INBOX.Drafts', 'INBOX/Drafts', 'Draft', 'INBOX.Draft']
+            : ['Sent', 'INBOX.Sent', 'INBOX/Sent', 'Sent Items', 'INBOX.Sent Items',
+               'Sent Messages', 'INBOX.Sent Messages'];
+
+        $names = [];
+        try {
+            $names = $this->list_folders();
+        } catch (\Throwable $e) {
+            $this->append_log .= 'folder list failed: ' . $e->getMessage() . "\n";
+        }
+        $this->append_log .= 'folders seen: ' . implode(', ', $names) . "\n";
+
+        // 1. Exact match against the names the server reported.
+        foreach ($candidates as $c) {
+            foreach ($names as $n) {
+                if (strcasecmp($n, $c) === 0 && $this->folder_exists($n)) {
+                    return $this->cache_folder($type, $n);
+                }
+            }
+        }
+
+        // 2. Any reported folder whose leaf name contains "sent" / "draft".
+        foreach ($names as $n) {
+            $leaf = preg_replace('/^INBOX[.\/]/i', '', $n);
+            if (stripos($leaf, $needle) !== false && $this->folder_exists($n)) {
+                return $this->cache_folder($type, $n);
+            }
+        }
+
+        // 3. The server list may be unusable (imap_list can fail or return
+        //    unparseable names) — probe the conventional names directly.
+        foreach ($candidates as $c) {
+            if ($this->folder_exists($c)) {
+                return $this->cache_folder($type, $c);
+            }
+        }
+
+        if (!$create) {
+            return '';
+        }
+
+        // 4. Create it, matching the server's namespace prefix when it uses one.
+        $prefix = '';
+        foreach ($names as $n) {
+            if (preg_match('/^INBOX([.\/])/i', $n, $m)) {
+                $prefix = 'INBOX' . $m[1];
+                break;
+            }
+        }
+        $target = $prefix . ($type === 'drafts' ? 'Drafts' : 'Sent');
+        try {
+            $this->ensure_stream();
+            $spec = $this->build_mailbox_spec($target);
+            $made = @imap_createmailbox($this->stream, $spec);
+            @imap_subscribe($this->stream, $spec);
+            $this->append_log .= 'create "' . $target . '": ' . ($made ? 'OK' : 'FAILED ' . $this->imap_error()) . "\n";
+            if (!$made && !$this->folder_exists($target)) {
+                return '';
+            }
+        } catch (\Throwable $e) {
+            $this->append_log .= 'could not create ' . $target . ': ' . $e->getMessage() . "\n";
+            return '';
+        }
+
+        return $this->cache_folder($type, $target);
+    }
+
+    /**
+     * Remember and return a resolved special-folder name.
+     *
+     * @param  string $type   'sent' or 'drafts'
+     * @param  string $folder Resolved folder name
+     * @return string
+     */
+    private function cache_folder(string $type, string $folder): string {
+        $this->special_folder_cache[$type] = $folder;
+        $this->append_log .= 'resolved ' . $type . ' folder: "' . $folder . "\"\n";
+        return $folder;
+    }
+
+    /**
+     * Check that a folder can actually be addressed on the server.
+     *
+     * @param  string $folder
+     * @return bool
+     */
+    private function folder_exists(string $folder): bool {
+        if ($folder === '') {
+            return false;
+        }
+        try {
+            $this->ensure_stream();
+        } catch (\Throwable $e) {
+            return false;
+        }
+        $status = @imap_status($this->stream, $this->build_mailbox_spec($folder), SA_MESSAGES);
+        return $status !== false;
+    }
+
+    /**
+     * Return the most recent IMAP error text, or a placeholder.
+     *
+     * @return string
+     */
+    private function imap_error(): string {
+        $errors = imap_errors();
+        if (!empty($errors)) {
+            return implode(' | ', array_slice($errors, -3));
+        }
+        return imap_last_error() ?: 'unknown IMAP error';
+    }
+
+    /**
+     * Open a stream if none is currently open (defaults to INBOX).
+     */
+    private function ensure_stream(): void {
+        if (!$this->stream) {
+            $this->connect('INBOX');
+        }
+    }
+
+    /**
+     * Append a raw RFC-822 message to a folder on the server.
+     */
+    private function append_raw(string $folder, string $raw, string $flags = ''): bool {
+        try {
+            $this->ensure_stream();
+        } catch (\Throwable $e) {
+            $this->append_log .= 'append connect failed: ' . $e->getMessage() . "\n";
+            return false;
+        }
+        // IMAP APPEND requires CRLF line endings.
+        $raw  = preg_replace("/\r\n|\r|\n/", "\r\n", $raw);
+        $spec = $this->build_mailbox_spec($folder);
+        $ok   = @imap_append($this->stream, $spec, $raw, $flags);
+        $this->append_log .= 'append ' . strlen($raw) . ' bytes to "' . $folder . '" (' . $spec . '): '
+            . ($ok ? 'OK' : 'FAILED ' . $this->imap_error()) . "\n";
+        return (bool)$ok;
+    }
+
+    /**
+     * Build a simple RFC-822 HTML message for a draft.
+     *
+     * Hand-rolled rather than routed through PHPMailer because a draft is
+     * routinely incomplete (no recipient yet), which PHPMailer rejects.
+     */
+    private function build_draft_mime(
+        string $from_email,
+        string $from_name,
+        string $to,
+        string $subject,
+        string $body_html,
+        string $cc,
+        string $draftid
+    ): string {
+        $enc = function (string $v): string {
+            $v = trim(preg_replace('/[\r\n]+/', ' ', $v));
+            if ($v === '' || !preg_match('/[^\x20-\x7E]/', $v)) {
+                return $v;
+            }
+            return '=?UTF-8?B?' . base64_encode($v) . '?=';
+        };
+        $addr = function (string $list): string {
+            $out = [];
+            foreach (explode(',', $list) as $a) {
+                $a = trim(preg_replace('/[\r\n]+/', ' ', $a));
+                if ($a !== '') {
+                    $out[] = $a;
+                }
+            }
+            return implode(', ', $out);
+        };
+
+        $from = $from_name !== ''
+            ? $enc($from_name) . ' <' . $from_email . '>'
+            : $from_email;
+
+        $domain = substr(strrchr($from_email, '@') ?: '@localhost', 1);
+        $headers = [
+            'Date: ' . date('r'),
+            'From: ' . $from,
+        ];
+        // A draft is routinely unaddressed — omit an empty To rather than send
+        // an empty header, which some IMAP servers reject on APPEND.
+        if ($addr($to) !== '') {
+            $headers[] = 'To: ' . $addr($to);
+        }
+        $headers = array_merge($headers, [
+            'Subject: ' . $enc($subject),
+            'Message-ID: <' . bin2hex(random_bytes(12)) . '@' . $domain . '>',
+            'X-Mailer: Moodle Student Email Manager',
+            'MIME-Version: 1.0',
+            'Content-Type: text/html; charset=UTF-8',
+            'Content-Transfer-Encoding: base64',
+        ]);
+        if ($addr($cc) !== '') {
+            $headers[] = 'Cc: ' . $addr($cc);
+        }
+        if ($draftid !== '') {
+            $headers[] = 'X-SEM-Draft-Id: ' . preg_replace('/[^A-Za-z0-9._-]/', '', $draftid);
+        }
+
+        $body = chunk_split(base64_encode($body_html), 76, "\r\n");
+
+        return implode("\r\n", $headers) . "\r\n\r\n" . $body;
     }
 
     /**
@@ -649,35 +1052,6 @@ class imap_client {
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
-
-    /**
-     * Append the sent MIME message to the IMAP Sent folder.
-     *
-     * Only called when $this->stream is already open (avoids a blocking
-     * imap_open() that can hang for 60 s+ if the Sent folder doesn't exist).
-     *
-     * @param \moodle_phpmailer $mail A successfully-sent PHPMailer instance.
-     */
-    private function append_to_sent(\moodle_phpmailer $mail): void {
-        if (!method_exists($mail, 'getSentMIMEMessage')) {
-            return;
-        }
-        $sent_raw = $mail->getSentMIMEMessage();
-        if (empty($sent_raw)) {
-            return;
-        }
-        // Reopen stream to Sent folder using existing credentials (fast because
-        // the TCP connection to the server is likely already warm).
-        $spec = $this->build_mailbox_spec('Sent');
-        $sent_stream = @imap_open($spec, $this->username, $this->password, 0, 1,
-            ['DISABLE_AUTHENTICATOR' => 'GSSAPI']);
-        if (!$sent_stream) {
-            throw new \moodle_exception('error_imap_connect', 'local_studentemail', '',
-                imap_last_error() ?: 'Could not open Sent folder');
-        }
-        @imap_append($sent_stream, '{' . $this->get_host_spec() . '}Sent', $sent_raw, '\\Seen');
-        @imap_close($sent_stream);
-    }
 
     private function get_host_spec(): string {
         $host = trim(get_config('auth_studentemail', 'imap_host') ?? '');
@@ -824,7 +1198,7 @@ class imap_client {
     private function decode_part(string $data, int $encoding): string {
         switch ($encoding) {
             case ENCBASE64:
-                // imap_fetchbody returns base64 with CRLF line breaks — strip before decoding.
+                // Base64 from imap_fetchbody() carries CRLF line breaks — strip before decoding.
                 return base64_decode(str_replace(["\r", "\n", " "], '', $data));
             case ENCQUOTEDPRINTABLE:
                 return quoted_printable_decode($data);
@@ -865,8 +1239,11 @@ class imap_client {
         $html = preg_replace('/\s+on\w+\s*=\s*\'[^\']*\'/i', '', $html);
         $html = preg_replace('/\s+on\w+\s*=\s*[^\s>]+/i', '', $html);
         // Remove javascript: protocol from any link-bearing attribute.
-        $html = preg_replace('/(href|src|action|formaction)\s*=\s*["\']?\s*javascript:/i',
-            '$1="about:blank"', $html);
+        $html = preg_replace(
+            '/(href|src|action|formaction)\s*=\s*["\']?\s*javascript:/i',
+            '$1="about:blank"',
+            $html
+        );
         // Remove <meta>, <link>, and <base> tags.
         $html = preg_replace('/<(meta|link|base)\b[^>]*>/i', '', $html);
         // Remove <style> blocks (may contain expression() or behavior:).

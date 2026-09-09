@@ -26,7 +26,7 @@ global $CFG;
 require_once($CFG->libdir . '/filelib.php');
 
 /**
- * cPanel API wrapper.
+ * Wrapper for the cPanel API.
  *
  * All public methods return an array:
  *   ['success' => bool, 'message' => string, 'data' => mixed]
@@ -198,7 +198,7 @@ class cpanel_api {
             $acct = (array)$acct;
             $login_raw  = $acct['login']  ?? '';
             $email_raw  = $acct['email']  ?? '';
-            $user_raw   = $acct['user']   ?? ''; // some versions use 'user'
+            $user_raw   = $acct['user']   ?? ''; // Some versions use 'user'.
 
             // Old logic (buggy if login = full email).
             $old_localpart = strtolower(trim($login_raw));

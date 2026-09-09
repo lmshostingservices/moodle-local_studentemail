@@ -94,7 +94,9 @@ if ($action === 'send_message') {
 
 // Signature actions don't need IMAP credentials.
 if ($action === 'save_signature') {
-    $sig = optional_param('signature', '', PARAM_RAW);
+    // Plain text with line breaks: PARAM_TEXT strips markup and is the
+    // narrowest type that preserves what a signature legitimately contains.
+    $sig = optional_param('signature', '', PARAM_TEXT);
     // Limit to 2 KB.
     $sig = substr($sig, 0, 2048);
     set_user_preference('local_studentemail_signature', $sig);
@@ -165,11 +167,57 @@ try {
             break;
 
         // -----------------------------------------------------------------------
+        // Save (or re-save) a draft into the mailbox's real IMAP Drafts folder,
+        // so it is visible here, in Roundcube/cPanel webmail and in any mail
+        // client. Called by compose autosave, the Save draft button, and on
+        // closing the compose pane with unsent content.
+        case 'save_draft':
+            $to      = optional_param('to', '', PARAM_TEXT);
+            $cc      = optional_param('cc', '', PARAM_TEXT);
+            $subject = optional_param('subject', '', PARAM_TEXT);
+            // The body is HTML composed in the rich-text editor. PARAM_CLEANHTML
+            // is the narrowest type that keeps the formatting: it runs the value
+            // through clean_text(), stripping scripts and unsafe markup before
+            // the draft is stored on the mail server.
+            $body    = optional_param('body', '', PARAM_CLEANHTML);
+            $draftid = optional_param('draftid', '', PARAM_ALPHANUMEXT);
+
+            $result = $client->save_draft($email, fullname($USER), $to, $subject, $body, $cc, $draftid);
+            $client->close();
+            echo json_encode([
+                'success'  => true,
+                'message'  => get_string('draft_saved', 'local_studentemail'),
+                'folder'   => $result['folder'],
+                'replaced' => $result['replaced'],
+                'append_log' => $client->get_append_log(),
+                'draftid'  => $draftid,
+                'saved_at' => userdate(time(), get_string('strftimetime', 'langconfig')),
+            ]);
+            break;
+
+        // -----------------------------------------------------------------------
+        // Discard a draft from the IMAP Drafts folder (used when the student
+        // discards compose, or after a successful send).
+        case 'delete_draft':
+            $draftid = optional_param('draftid', '', PARAM_ALPHANUMEXT);
+            $removed = $client->delete_drafts_by_id($draftid);
+            $client->close();
+            echo json_encode(['success' => true, 'removed' => $removed]);
+            break;
+
+        // -----------------------------------------------------------------------
         case 'send_message':
             $to      = required_param('to', PARAM_TEXT);
             $cc      = optional_param('cc', '', PARAM_TEXT);
             $subject = required_param('subject', PARAM_TEXT);
-            $body    = required_param('body', PARAM_RAW);
+            // The body is HTML composed in the rich-text editor. PARAM_CLEANHTML
+            // is the narrowest type that keeps the formatting: it runs the value
+            // through clean_text(), stripping scripts and unsafe markup before
+            // the message is sent.
+            $body    = required_param('body', PARAM_CLEANHTML);
+            // Draft this send came from (if any) — its Drafts copy is removed
+            // once the message has actually gone out.
+            $draftid = optional_param('draftid', '', PARAM_ALPHANUMEXT);
 
             // Validate TO recipients.
             $recipients = array_filter(array_map('trim', explode(',', $to)));
@@ -293,12 +341,47 @@ try {
 
             try {
                 $client->send_message($email, $from_name, $to, $subject, $body, $cc, $attachments);
-                $client->close();
                 sem_step(12, 'send-succeeded');
+
+                // ---- File the sent copy in the mailbox's IMAP Sent folder ----
+                // The message is already delivered at this point, so nothing
+                // below may turn a successful send into a failure: every error
+                // is caught and reported alongside success = true. Every IMAP
+                // wait is bounded by imap_timeout() in connect().
+                $sentfiled  = false;
+                $sentfolder = '';
+                $appendlog  = '';
+                try {
+                    $sentfiled  = $client->append_sent_copy();
+                    $sentfolder = $client->get_last_append_folder();
+                    $appendlog  = $client->get_append_log();
+                } catch (\Throwable $ae) {
+                    $appendlog = $client->get_append_log() . 'exception: ' . $ae->getMessage();
+                }
+                if (!$sentfiled) {
+                    debugging('local_studentemail: sent copy NOT filed — ' . $appendlog, DEBUG_DEVELOPER);
+                }
+
+                // The message is out — remove the draft it was composed from.
+                if ($draftid !== '') {
+                    try {
+                        $client->delete_drafts_by_id($draftid);
+                    } catch (\Throwable $de) {
+                        debugging(
+                            'local_studentemail: draft cleanup failed: ' . $de->getMessage(),
+                            DEBUG_DEVELOPER
+                        );
+                    }
+                }
+                $client->close();
+
                 echo $sem_json([
-                    'success'   => true,
-                    'message'   => 'Message sent.',
-                    'smtp_log'  => $client->get_smtp_debug_log(),
+                    'success'     => true,
+                    'message'     => get_string('messagesent', 'local_studentemail'),
+                    'sent_filed'  => $sentfiled,
+                    'sent_folder' => $sentfolder,
+                    'append_log'  => $appendlog,
+                    'smtp_log'    => $client->get_smtp_debug_log(),
                 ]);
                 if (function_exists('fastcgi_finish_request')) { fastcgi_finish_request(); }
                 else { flush(); }
