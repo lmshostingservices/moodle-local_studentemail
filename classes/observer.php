@@ -31,23 +31,11 @@ class observer {
             return;
         }
 
-        global $DB;
-        $user = $DB->get_record('user', ['id' => $event->objectid]);
-        if (!$user || $user->deleted || $user->id <= 1) {
-            return;
-        }
-
-        // Skip guest and admin.
-        if (isguestuser($user) || is_siteadmin($user)) {
-            return;
-        }
-
-        $manager = new email_manager();
-        $result  = $manager->create_email($user);
-
-        if ($result['success'] && get_config('local_studentemail', 'welcome_email_enabled')) {
-            $manager->send_welcome_email($user, $result['email'], $result['password']);
-        }
+        self::guard('user_created', function () use ($event) {
+            global $DB;
+            $user = $DB->get_record('user', ['id' => $event->objectid]);
+            self::provision($user);
+        });
     }
 
     /**
@@ -60,17 +48,38 @@ class observer {
             return;
         }
 
-        global $DB;
+        self::guard('user_enrolment_created', function () use ($event) {
+            global $DB;
 
-        // Only provision if they don't have an account yet.
-        if ($DB->record_exists('local_studentemail_accounts', ['userid' => $event->relateduserid])) {
-            return;
-        }
+            // Only provision if they don't have an account yet.
+            if ($DB->record_exists('local_studentemail_accounts', ['userid' => $event->relateduserid])) {
+                return;
+            }
 
-        $user = $DB->get_record('user', ['id' => $event->relateduserid]);
+            $user = $DB->get_record('user', ['id' => $event->relateduserid]);
+            self::provision($user);
+        });
+    }
+
+    /**
+     * Provision a mailbox for a user and send credentials when appropriate.
+     *
+     * create_email() either creates a new mailbox (and returns its password) or
+     * links a mailbox that already exists on the server via link_account().
+     * link_account() resets that mailbox's password and sends the welcome email
+     * itself, and returns no password, so the observer must only send the
+     * welcome email for a newly created mailbox. Sending it again on the link
+     * path would duplicate the email — and, with no password in the result,
+     * raised a TypeError that surfaced on the admin "Add a new user" page.
+     *
+     * @param \stdClass|false $user Moodle user record.
+     */
+    private static function provision($user): void {
         if (!$user || $user->deleted || $user->id <= 1) {
             return;
         }
+
+        // Skip guest and admin.
         if (isguestuser($user) || is_siteadmin($user)) {
             return;
         }
@@ -78,8 +87,44 @@ class observer {
         $manager = new email_manager();
         $result  = $manager->create_email($user);
 
-        if ($result['success'] && get_config('local_studentemail', 'welcome_email_enabled')) {
-            $manager->send_welcome_email($user, $result['email'], $result['password']);
+        if (empty($result['success'])) {
+            return;
+        }
+
+        // Linked to an existing mailbox: link_account() has already handled
+        // the password and the welcome email.
+        if (!empty($result['linked_existing'])) {
+            return;
+        }
+
+        $email    = (string)($result['email'] ?? '');
+        $password = (string)($result['password'] ?? '');
+        if ($email === '' || $password === '') {
+            return;
+        }
+
+        if (get_config('local_studentemail', 'welcome_email_enabled')) {
+            $manager->send_welcome_email($user, $email, $password);
+        }
+    }
+
+    /**
+     * Run observer work so that a failure can never interrupt the Moodle
+     * action that triggered the event (creating, enrolling, updating or
+     * deleting a user). Failures are logged instead of thrown.
+     *
+     * @param string   $handler Observer name, for the log line.
+     * @param callable $work    The observer body.
+     */
+    private static function guard(string $handler, callable $work): void {
+        try {
+            $work();
+        } catch (\Throwable $e) {
+            $message = 'local_studentemail observer ' . $handler . ' failed: '
+                . get_class($e) . ': ' . $e->getMessage()
+                . ' in ' . $e->getFile() . ':' . $e->getLine();
+            error_log($message);
+            debugging($message, DEBUG_DEVELOPER);
         }
     }
 
@@ -87,6 +132,17 @@ class observer {
      * A user account was updated (handles suspension/unsuspension).
      */
     public static function user_updated(\core\event\user_updated $event): void {
+        self::guard('user_updated', function () use ($event) {
+            self::handle_user_updated($event);
+        });
+    }
+
+    /**
+     * Body of user_updated(), run inside guard().
+     *
+     * @param \core\event\user_updated $event
+     */
+    private static function handle_user_updated(\core\event\user_updated $event): void {
         global $DB;
 
         $user = $DB->get_record('user', ['id' => $event->objectid]);
@@ -128,7 +184,9 @@ class observer {
             return;
         }
 
-        $manager = new email_manager();
-        $manager->archive_email($event->objectid);
+        self::guard('user_deleted', function () use ($event) {
+            $manager = new email_manager();
+            $manager->archive_email($event->objectid);
+        });
     }
 }

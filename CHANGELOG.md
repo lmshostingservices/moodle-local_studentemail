@@ -7,6 +7,26 @@ Entries below v1.5.35 are reconstructed from the release notes carried in
 versions and have deliberately not been invented; only dates stated in the
 source are shown.
 
+## [v1.5.40] - 2026-09-22
+
+### Fixed
+- **Adding a user could show a TypeError on the "Add a new user" page.**
+  `Argument #3 ($password) must be of type string, null given, called in
+  observer.php on line 49`. When the new user already had a mailbox on the
+  server, `create_email()` linked it through `link_account()`, which resets the
+  mailbox password and sends the welcome email itself and returns no password.
+  The `user_created` and `user_enrolment_created` observers then called
+  `send_welcome_email()` again with `null`. The user was still created, but the
+  page errored. The observers now send the welcome email only for a newly
+  created mailbox, so linked students also no longer risk a duplicate email.
+
+### Changed
+- Every observer (`user_created`, `user_enrolment_created`, `user_updated`,
+  `user_deleted`) now runs inside a guard that logs any failure to the PHP error
+  log and to developer debugging instead of throwing. A provisioning, cPanel or
+  mail problem can no longer interrupt creating, enrolling, updating or deleting
+  a Moodle user.
+
 ## [v1.5.39] - 2026-09-09
 
 ### Fixed
